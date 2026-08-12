@@ -1,0 +1,8 @@
+fastapi[standard]
+openai
+sqlalchemy
+alembic
+psycopg[binary]
+pgvector
+pydantic-settings
+pypdf
