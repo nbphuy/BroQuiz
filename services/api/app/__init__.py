@@ -1,0 +1,1 @@
+"""BroQuiz API application package."""
