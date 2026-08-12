@@ -15,3 +15,10 @@ class DocumentResponse(BaseModel):
     page_count: int | None
     created_at: datetime
     updated_at: datetime
+
+
+class DocumentChunkingResponse(BaseModel):
+    document_id: uuid.UUID
+    status: str
+    page_count: int
+    chunk_count: int
