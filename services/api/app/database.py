@@ -11,3 +11,11 @@ SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
 def check_database_connection() -> None:
     with engine.connect() as connection:
         connection.execute(text("SELECT 1"))
+
+
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
