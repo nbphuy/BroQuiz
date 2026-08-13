@@ -1,4 +1,5 @@
 import uuid
+from datetime import datetime
 from typing import Annotated
 
 from pydantic import BaseModel, Field, field_validator
@@ -78,3 +79,58 @@ class QuizResponse(GeneratedQuiz):
 
 class QuizGenerationResponse(QuizResponse):
     pass
+
+
+class AttemptOptionResponse(BaseModel):
+    position: int
+    text: str
+
+
+class AttemptQuestionResponse(BaseModel):
+    id: uuid.UUID
+    question: str
+    position: int
+    options: list[AttemptOptionResponse]
+
+
+class AttemptAnswerSubmission(BaseModel):
+    question_id: uuid.UUID
+    selected_answer: Annotated[int, Field(ge=0, le=3)]
+
+
+class AttemptSubmissionRequest(BaseModel):
+    answers: list[AttemptAnswerSubmission]
+
+
+class AttemptSourceResponse(BaseModel):
+    chunk_id: uuid.UUID | None
+    page_number: int
+    chunk_index: int
+
+
+class AttemptReviewAnswerResponse(BaseModel):
+    question_id: uuid.UUID
+    selected_answer: int
+    correct_answer: int
+    is_correct: bool
+    explanation: str
+    sources: list[AttemptSourceResponse]
+
+
+class AttemptInProgressResponse(BaseModel):
+    id: uuid.UUID
+    quiz_id: uuid.UUID
+    status: str
+    started_at: datetime
+    questions: list[AttemptQuestionResponse]
+
+
+class AttemptSubmittedResponse(BaseModel):
+    id: uuid.UUID
+    quiz_id: uuid.UUID
+    status: str
+    score: int
+    total_questions: int
+    started_at: datetime
+    submitted_at: datetime
+    answers: list[AttemptReviewAnswerResponse]

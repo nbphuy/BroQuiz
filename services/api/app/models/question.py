@@ -9,6 +9,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.models.base import Base
 
 if TYPE_CHECKING:
+    from app.models.attempt_answer import AttemptAnswer
     from app.models.question_option import QuestionOption
     from app.models.question_source import QuestionSource
     from app.models.quiz import Quiz
@@ -29,3 +30,4 @@ class Question(Base):
     quiz: Mapped["Quiz"] = relationship(back_populates="questions")
     options: Mapped[list["QuestionOption"]] = relationship(back_populates="question", cascade="all, delete-orphan", passive_deletes=True)
     sources: Mapped[list["QuestionSource"]] = relationship(back_populates="question", cascade="all, delete-orphan", passive_deletes=True)
+    attempt_answers: Mapped[list["AttemptAnswer"]] = relationship(back_populates="question")
