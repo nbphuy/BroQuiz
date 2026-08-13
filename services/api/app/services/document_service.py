@@ -1,5 +1,4 @@
 import logging
-from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -7,7 +6,7 @@ from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.models.document import Document
-from app.services.pdf_service import ExtractedPage, PdfExtractionError, extract_pdf_pages
+from app.services.pdf_service import PdfExtractionError, extract_pdf_pages
 
 if TYPE_CHECKING:
     from fastapi import UploadFile
@@ -24,12 +23,6 @@ class DocumentUploadError(Exception):
         self.status_code = status_code
         self.detail = detail
         super().__init__(detail)
-
-
-@dataclass(frozen=True)
-class ProcessedDocument:
-    document: Document
-    pages: list[ExtractedPage]
 
 
 def _validate_upload_metadata(upload: "UploadFile") -> str:
@@ -70,7 +63,7 @@ async def _save_upload(upload: "UploadFile", destination: Path) -> int:
     return size
 
 
-async def create_and_process_document(db: Session, upload: "UploadFile") -> ProcessedDocument:
+async def create_and_process_document(db: Session, upload: "UploadFile") -> Document:
     filename = _validate_upload_metadata(upload)
     settings.upload_directory.mkdir(parents=True, exist_ok=True)
 
@@ -99,7 +92,7 @@ async def create_and_process_document(db: Session, upload: "UploadFile") -> Proc
         document.status = "processed"
         db.commit()
         db.refresh(document)
-        return ProcessedDocument(document=document, pages=pages)
+        return document
     except PdfExtractionError:
         db.rollback()
         document.status = "failed"
