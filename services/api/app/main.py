@@ -5,12 +5,14 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from app.database import check_database_connection
 from app.api.documents import router as documents_router
+from app.api.quizzes import router as quizzes_router
 
 
 logger = logging.getLogger(__name__)
 
 app = FastAPI(title="BroQuiz API", version="0.1.0")
 app.include_router(documents_router)
+app.include_router(quizzes_router)
 
 
 @app.get("/health")

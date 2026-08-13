@@ -15,10 +15,12 @@ from app.schemas.document import (
     DocumentSearchResponse,
     DocumentSearchResult,
 )
+from app.schemas.quiz import QuizGenerationRequest, QuizGenerationResponse
 from app.services.chunking_service import DocumentChunkingError, chunk_document
 from app.services.document_service import DocumentUploadError, create_and_process_document
 from app.services.embedding_service import DocumentEmbeddingError, embed_document
 from app.services.retrieval_service import RetrievalError, retrieve_chunks
+from app.services.quiz_service import QuizGenerationError, generate_quiz
 
 
 logger = logging.getLogger(__name__)
@@ -123,3 +125,21 @@ def search_document(
             for result in results
         ],
     )
+
+
+@router.post("/{document_id}/quiz/generate", response_model=QuizGenerationResponse)
+def generate_document_quiz(
+    document_id: uuid.UUID,
+    request: QuizGenerationRequest,
+    db: Annotated[Session, Depends(get_db)],
+) -> QuizGenerationResponse:
+    try:
+        return generate_quiz(db, document_id, request.topic, request.question_count)
+    except QuizGenerationError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+    except Exception:
+        logger.exception("Unexpected quiz generation error")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Unable to generate quiz.",
+        )

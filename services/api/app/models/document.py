@@ -10,6 +10,7 @@ from app.models.base import Base
 
 if TYPE_CHECKING:
     from app.models.document_chunk import DocumentChunk
+    from app.models.quiz import Quiz
 
 
 class Document(Base):
@@ -33,5 +34,8 @@ class Document(Base):
     )
 
     chunks: Mapped[list["DocumentChunk"]] = relationship(
+        back_populates="document", cascade="all, delete-orphan", passive_deletes=True
+    )
+    quizzes: Mapped[list["Quiz"]] = relationship(
         back_populates="document", cascade="all, delete-orphan", passive_deletes=True
     )
