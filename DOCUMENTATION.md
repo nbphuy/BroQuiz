@@ -13,16 +13,16 @@ Current local defaults are PostgreSQL database/user `broquiz`, Compose service `
 Repository root:
 
 ```text
-D:\AI_Engineer\BroQuiz_v1
+<BROQUIZ_ROOT>
 ```
 
 Backend:
 
 ```text
-D:\AI_Engineer\BroQuiz_v1\services\api
+<BROQUIZ_ROOT>\services\api
 ```
 
-Each section states its required location. Run commands from that location: Compose paths and the `.env` file are rooted at the repository, while `uv`, pytest, and Alembic run from `services/api`.
+For example, the current checkout is `D:\AI_Engineer\BroQuiz_v1`. Each section states its required location. Run commands from that location: Compose paths and the `.env` file are rooted at the repository, while `uv`, pytest, and Alembic run from `services/api`.
 
 ## 3. Quick start
 
@@ -236,6 +236,8 @@ PowerShell:
 ```powershell
 Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8000/documents -Form @{ file = Get-Item 'C:\path\to\sample.pdf' }
 ```
+
+`Invoke-RestMethod -Form` requires PowerShell 7 or later. Windows PowerShell users can use the documented `curl.exe` command instead.
 
 The response has `id`, `filename`, `content_type`, `file_size`, `status`, `page_count`, `created_at`, and `updated_at`. Save `id` as `<DOCUMENT_ID>`. A successful parsed upload ends with document status `processed`.
 
@@ -481,7 +483,7 @@ Current migration chain:
 
 Run from: **repository root**
 
-CMD and PowerShell:
+CMD:
 
 ```text
 git rev-parse --show-toplevel
@@ -491,9 +493,13 @@ git diff
 git ls-files | findstr /i "__pycache__ .pyc .pyo"
 ```
 
-For PowerShell-native cache inspection:
+PowerShell:
 
 ```powershell
+git rev-parse --show-toplevel
+git status
+git diff --stat
+git diff
 git ls-files | Select-String -Pattern '(^|/)__pycache__/|\.py[co]$'
 ```
 
