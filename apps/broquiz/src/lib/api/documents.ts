@@ -11,6 +11,13 @@ export class DocumentUploadError extends Error {
   }
 }
 
+export class DocumentFetchError extends Error {
+  constructor(message: string, readonly statusCode?: number, options?: ErrorOptions) {
+    super(message, options);
+    this.name = "DocumentFetchError";
+  }
+}
+
 function getBackendErrorMessage(error: unknown): string | undefined {
   if (typeof error !== "object" || error === null || !("detail" in error)) return undefined;
   const { detail } = error;
@@ -35,5 +42,21 @@ export async function uploadDocument(file: File): Promise<UploadedDocument> {
   } catch (error) {
     if (error instanceof DocumentUploadError) throw error;
     throw new DocumentUploadError("Unable to reach the BroQuiz API. Check that the backend is running.", { cause: error });
+  }
+}
+
+export async function getDocument(documentId: string): Promise<UploadedDocument> {
+  try {
+    const { data, error, response } = await apiClient.GET("/documents/{document_id}", {
+      params: { path: { document_id: documentId } },
+    });
+    if (!response.ok) {
+      throw new DocumentFetchError(response.status === 404 ? "Document not found." : getBackendErrorMessage(error) ?? "Unable to load this document.", response.status);
+    }
+    if (!data) throw new DocumentFetchError("The BroQuiz API returned no document metadata.");
+    return data;
+  } catch (error) {
+    if (error instanceof DocumentFetchError) throw error;
+    throw new DocumentFetchError("Unable to reach the BroQuiz API. Check that the backend is running.", undefined, { cause: error });
   }
 }
