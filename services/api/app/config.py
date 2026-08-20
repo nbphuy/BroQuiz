@@ -5,6 +5,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
+EMBEDDING_VECTOR_DIMENSIONS = 768
 
 
 class Settings(BaseSettings):
@@ -18,7 +19,7 @@ class Settings(BaseSettings):
     embedding_provider: str = "ollama"
     ollama_base_url: str = "http://localhost:11434"
     embedding_model: str = "embeddinggemma"
-    embedding_dimensions: int = 768
+    embedding_dimensions: int = EMBEDDING_VECTOR_DIMENSIONS
     embedding_batch_size: int = 16
     retrieval_top_k: int = 5
     retrieval_max_top_k: int = 20
@@ -43,6 +44,11 @@ class Settings(BaseSettings):
             raise ValueError("chunk_overlap_chars must be at least zero and less than chunk_size_chars")
         if self.embedding_dimensions <= 0:
             raise ValueError("embedding_dimensions must be positive")
+        if self.embedding_dimensions != EMBEDDING_VECTOR_DIMENSIONS:
+            raise ValueError(
+                "embedding_dimensions must match the persisted pgvector schema "
+                f"({EMBEDDING_VECTOR_DIMENSIONS})"
+            )
         if self.embedding_batch_size <= 0:
             raise ValueError("embedding_batch_size must be positive")
         if not 1 <= self.retrieval_top_k <= self.retrieval_max_top_k:

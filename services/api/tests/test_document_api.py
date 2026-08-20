@@ -9,6 +9,7 @@ from app.database import get_db
 from app.main import app
 from app.models.document import Document
 from app.services.chunking_service import ChunkingResult, DocumentChunkingError
+from app.services.embedding_service import DocumentEmbeddingError, EmbeddingResult
 
 
 @pytest.fixture
@@ -99,10 +100,66 @@ def test_create_document_chunks_exposes_safe_lifecycle_errors(
     assert response.json() == {"detail": detail}
 
 
+def test_create_document_embeddings_returns_persisted_summary(
+    client: TestClient, stored_document: Document, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    stored_document.status = "embedded"
+    monkeypatch.setattr(
+        documents_api,
+        "embed_document",
+        lambda db, document_id: EmbeddingResult(
+            document=stored_document,
+            chunk_count=3,
+            embedded_count=3,
+        ),
+    )
+
+    response = client.post(f"/documents/{stored_document.id}/embeddings")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "document_id": str(stored_document.id),
+        "status": "embedded",
+        "chunk_count": 3,
+        "embedded_count": 3,
+        "model": "embeddinggemma",
+        "dimensions": 768,
+    }
+
+
+@pytest.mark.parametrize(
+    "status_code, detail",
+    [
+        (404, "Document not found."),
+        (409, "Document is not ready for embedding."),
+        (409, "Document has no chunks to embed."),
+        (503, "Embedding service unavailable"),
+    ],
+)
+def test_create_document_embeddings_exposes_safe_errors(
+    client: TestClient,
+    stored_document: Document,
+    monkeypatch: pytest.MonkeyPatch,
+    status_code: int,
+    detail: str,
+) -> None:
+    def fail_embedding(db, document_id):  # noqa: ANN001
+        raise DocumentEmbeddingError(status_code, detail)
+
+    monkeypatch.setattr(documents_api, "embed_document", fail_embedding)
+
+    response = client.post(f"/documents/{stored_document.id}/embeddings")
+
+    assert response.status_code == status_code
+    assert response.json() == {"detail": detail}
+
+
 def test_document_endpoints_are_in_openapi_with_typed_response_schemas(client: TestClient) -> None:
     paths = client.get("/openapi.json").json()["paths"]
     document_operation = paths["/documents/{document_id}"]["get"]
     chunking_operation = paths["/documents/{document_id}/chunks"]["post"]
+    embedding_operation = paths["/documents/{document_id}/embeddings"]["post"]
 
     assert document_operation["responses"]["200"]["content"]["application/json"]["schema"]["$ref"].endswith("/DocumentResponse")
     assert chunking_operation["responses"]["200"]["content"]["application/json"]["schema"]["$ref"].endswith("/DocumentChunkingResponse")
+    assert embedding_operation["responses"]["200"]["content"]["application/json"]["schema"]["$ref"].endswith("/DocumentEmbeddingResponse")

@@ -59,18 +59,32 @@ def embed_document(
     if not chunks:
         raise DocumentEmbeddingError(409, "Document has no chunks to embed.")
 
+    # An embedded document is a completed ingestion result. Returning its
+    # persisted summary makes retries safe and avoids unnecessary model calls.
+    if document.status == "embedded":
+        if any(chunk.embedding is None for chunk in chunks):
+            raise DocumentEmbeddingError(409, "Document has incomplete embeddings.")
+        return EmbeddingResult(document=document, chunk_count=len(chunks), embedded_count=len(chunks))
+
     provider = provider or get_embedding_provider()
     try:
+        generated_vectors: list[list[float]] = []
         for start in range(0, len(chunks), settings.embedding_batch_size):
             batch = chunks[start : start + settings.embedding_batch_size]
             vectors = provider.embed_texts([chunk.content for chunk in batch])
             if len(vectors) != len(batch):
                 raise EmbeddingResponseError("Embedding provider returned an unexpected vector count")
-            for chunk, vector in zip(batch, vectors, strict=True):
+            for vector in vectors:
                 # Providers validate vectors, but retain this boundary check for future adapters.
                 if len(vector) != settings.embedding_dimensions:
                     raise EmbeddingResponseError("Embedding provider returned an invalid vector dimension")
-                chunk.embedding = vector
+                generated_vectors.append(vector)
+
+        # Apply only after every provider response has passed validation. Together
+        # with the single commit below, this prevents partially assigned vectors
+        # from being flushed if a later batch fails.
+        for chunk, vector in zip(chunks, generated_vectors, strict=True):
+            chunk.embedding = vector
 
         document.status = "embedded"
         db.commit()

@@ -10,6 +10,7 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 
+from app.config import settings
 from app.database import SessionLocal
 from app.main import app
 from app.models.document import Document
@@ -74,8 +75,11 @@ def test_real_semantic_retrieval_pipeline() -> None:
             document_payload = document_response.json()
             assert document_payload["id"] == document_id
             assert document_payload["filename"] == "semantic-topics.pdf"
-            assert client.post(f"/documents/{document_id}/chunks").status_code == 200
-            assert client.post(f"/documents/{document_id}/embeddings").status_code == 200
+            chunk_response = client.post(f"/documents/{document_id}/chunks")
+            assert chunk_response.status_code == 200
+            embedding_response = client.post(f"/documents/{document_id}/embeddings")
+            assert embedding_response.status_code == 200
+            embedding_payload = embedding_response.json()
             with SessionLocal() as db:
                 document = db.get(Document, document_id)
                 assert document is not None
@@ -94,6 +98,12 @@ def test_real_semantic_retrieval_pipeline() -> None:
                         .order_by(DocumentChunk.chunk_index)
                     )
                 )
+                assert document.status == "embedded"
+                assert len(before_chunks) == chunk_response.json()["chunk_count"]
+                assert len(before_chunks) == embedding_payload["embedded_count"]
+                assert embedding_payload["dimensions"] == settings.embedding_dimensions
+                assert all(row.embedding is not None for row in before_chunks)
+                assert all(len(row.embedding) == settings.embedding_dimensions for row in before_chunks)
 
             hci = client.post(
                 f"/documents/{document_id}/search",
