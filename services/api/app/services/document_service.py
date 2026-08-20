@@ -1,4 +1,5 @@
 import logging
+import uuid
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -23,6 +24,10 @@ class DocumentUploadError(Exception):
         self.status_code = status_code
         self.detail = detail
         super().__init__(detail)
+
+
+def get_document(db: Session, document_id: uuid.UUID) -> Document | None:
+    return db.get(Document, document_id)
 
 
 def _validate_upload_metadata(upload: "UploadFile") -> str:

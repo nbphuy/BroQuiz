@@ -17,7 +17,11 @@ from app.schemas.document import (
 )
 from app.schemas.quiz import QuizGenerationRequest, QuizGenerationResponse
 from app.services.chunking_service import DocumentChunkingError, chunk_document
-from app.services.document_service import DocumentUploadError, create_and_process_document
+from app.services.document_service import (
+    DocumentUploadError,
+    create_and_process_document,
+    get_document,
+)
 from app.services.embedding_service import DocumentEmbeddingError, embed_document
 from app.services.retrieval_service import RetrievalError, retrieve_chunks
 from app.services.quiz_service import QuizGenerationError, generate_quiz
@@ -41,6 +45,20 @@ async def upload_document(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Unable to process the uploaded document.",
+        )
+    return DocumentResponse.model_validate(document)
+
+
+@router.get("/{document_id}", response_model=DocumentResponse)
+def get_uploaded_document(
+    document_id: uuid.UUID,
+    db: Annotated[Session, Depends(get_db)],
+) -> DocumentResponse:
+    document = get_document(db, document_id)
+    if document is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Document not found.",
         )
     return DocumentResponse.model_validate(document)
 

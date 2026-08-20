@@ -69,6 +69,11 @@ def test_real_semantic_retrieval_pipeline() -> None:
             )
             assert upload.status_code == 201, upload.text
             document_id = upload.json()["id"]
+            document_response = client.get(f"/documents/{document_id}")
+            assert document_response.status_code == 200, document_response.text
+            document_payload = document_response.json()
+            assert document_payload["id"] == document_id
+            assert document_payload["filename"] == "semantic-topics.pdf"
             assert client.post(f"/documents/{document_id}/chunks").status_code == 200
             assert client.post(f"/documents/{document_id}/embeddings").status_code == 200
             with SessionLocal() as db:
