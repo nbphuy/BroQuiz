@@ -2,6 +2,7 @@ import { apiClient } from "./client";
 import type { components, paths } from "./schema";
 
 export type UploadedDocument = components["schemas"]["DocumentResponse"];
+export type DocumentChunkingResult = components["schemas"]["DocumentChunkingResponse"];
 type UploadDocumentRequest = paths["/documents"]["post"]["requestBody"]["content"]["multipart/form-data"];
 
 export class DocumentUploadError extends Error {
@@ -15,6 +16,13 @@ export class DocumentFetchError extends Error {
   constructor(message: string, readonly statusCode?: number, options?: ErrorOptions) {
     super(message, options);
     this.name = "DocumentFetchError";
+  }
+}
+
+export class DocumentChunkingError extends Error {
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
+    this.name = "DocumentChunkingError";
   }
 }
 
@@ -58,5 +66,23 @@ export async function getDocument(documentId: string): Promise<UploadedDocument>
   } catch (error) {
     if (error instanceof DocumentFetchError) throw error;
     throw new DocumentFetchError("Unable to reach the BroQuiz API. Check that the backend is running.", undefined, { cause: error });
+  }
+}
+
+export async function createDocumentChunks(documentId: string): Promise<DocumentChunkingResult> {
+  try {
+    const { data, error, response } = await apiClient.POST("/documents/{document_id}/chunks", {
+      params: { path: { document_id: documentId } },
+    });
+    if (!response.ok) {
+      throw new DocumentChunkingError(
+        getBackendErrorMessage(error) ?? "Unable to create document chunks. Please try again.",
+      );
+    }
+    if (!data) throw new DocumentChunkingError("The BroQuiz API completed chunking without a result.");
+    return data;
+  } catch (error) {
+    if (error instanceof DocumentChunkingError) throw error;
+    throw new DocumentChunkingError("Unable to reach the BroQuiz API. Check that the backend is running.", { cause: error });
   }
 }

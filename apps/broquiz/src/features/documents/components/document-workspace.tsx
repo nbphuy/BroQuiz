@@ -1,7 +1,13 @@
 "use client";
 
-import { useQuery } from "@tanstack/react-query";
-import { DocumentFetchError, getDocument, type UploadedDocument } from "@/lib/api/documents";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import {
+  createDocumentChunks,
+  DocumentChunkingError,
+  DocumentFetchError,
+  getDocument,
+  type UploadedDocument,
+} from "@/lib/api/documents";
 
 type DocumentWorkspaceProps = { documentId: string };
 
@@ -68,14 +74,19 @@ function Metadata({ document }: { document: UploadedDocument }) {
 }
 
 export function DocumentWorkspace({ documentId }: DocumentWorkspaceProps) {
+  const queryClient = useQueryClient();
   const documentQuery = useQuery({
     queryKey: ["document", documentId],
     queryFn: () => getDocument(documentId),
     retry: false,
   });
+  const chunkingMutation = useMutation({
+    mutationFn: () => createDocumentChunks(documentId),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["document", documentId] }),
+  });
 
   if (documentQuery.isPending) {
-    return <main className="mx-auto flex min-h-screen w-full max-w-2xl flex-col justify-center px-6 py-16"><p role="status">Loading document�</p></main>;
+    return <main className="mx-auto flex min-h-screen w-full max-w-2xl flex-col justify-center px-6 py-16"><p role="status">Loading document...</p></main>;
   }
 
   if (documentQuery.error instanceof DocumentFetchError && documentQuery.error.statusCode === 404) {
@@ -86,12 +97,33 @@ export function DocumentWorkspace({ documentId }: DocumentWorkspaceProps) {
     return <main className="mx-auto flex min-h-screen w-full max-w-2xl flex-col justify-center px-6 py-16"><section aria-labelledby="error-heading"><h1 id="error-heading" className="text-2xl font-semibold">Unable to load document</h1><p className="mt-2 text-muted-foreground">Please try again in a moment.</p></section></main>;
   }
 
+  const canCreateChunks = documentQuery.data.status === "processed";
+  const chunkingError = chunkingMutation.error
+    ? chunkingMutation.error instanceof DocumentChunkingError
+      ? chunkingMutation.error.message
+      : "Unable to create document chunks. Please try again."
+    : null;
+
   return (
     <main className="mx-auto flex min-h-screen w-full max-w-2xl flex-col justify-center px-6 py-16">
       <section className="rounded-lg border bg-card p-6 shadow-sm" aria-labelledby="workspace-heading">
         <p className="text-sm font-medium text-muted-foreground">Document Processing Workspace</p>
         <h1 id="workspace-heading" className="mt-1 text-2xl font-semibold tracking-tight">Document details</h1>
         <Metadata document={documentQuery.data} />
+        {canCreateChunks ? (
+          <div className="mt-6">
+            <button
+              type="button"
+              onClick={() => chunkingMutation.mutate()}
+              disabled={chunkingMutation.isPending}
+              className="rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {chunkingMutation.isPending ? "Creating chunks..." : "Create chunks"}
+            </button>
+            {chunkingMutation.isPending ? <p className="mt-2 text-sm text-muted-foreground" role="status">Creating document chunks...</p> : null}
+            {chunkingError ? <p className="mt-2 text-sm text-destructive" role="alert">{chunkingError}</p> : null}
+          </div>
+        ) : null}
       </section>
     </main>
   );

@@ -1,19 +1,25 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const mocks = vi.hoisted(() => ({ getDocument: vi.fn() }));
+const mocks = vi.hoisted(() => ({ createDocumentChunks: vi.fn(), getDocument: vi.fn() }));
 
 vi.mock("@/lib/api/documents", () => ({
+  DocumentChunkingError: class DocumentChunkingError extends Error {
+    constructor(message: string) {
+      super(message);
+    }
+  },
   DocumentFetchError: class DocumentFetchError extends Error {
     constructor(message: string, readonly statusCode?: number) {
       super(message);
     }
   },
+  createDocumentChunks: mocks.createDocumentChunks,
   getDocument: mocks.getDocument,
 }));
 
-import { DocumentFetchError } from "@/lib/api/documents";
+import { DocumentChunkingError, DocumentFetchError } from "@/lib/api/documents";
 import { DocumentWorkspace } from "./document-workspace";
 
 const document = {
@@ -29,11 +35,15 @@ const document = {
 
 function renderWorkspace() {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, throwOnError: false } } });
-  return render(<QueryClientProvider client={queryClient}><DocumentWorkspace documentId="document-123" /></QueryClientProvider>);
+  return {
+    queryClient,
+    ...render(<QueryClientProvider client={queryClient}><DocumentWorkspace documentId="document-123" /></QueryClientProvider>),
+  };
 }
 
 describe("DocumentWorkspace", () => {
   beforeEach(() => {
+    mocks.createDocumentChunks.mockReset();
     mocks.getDocument.mockReset();
     vi.spyOn(console, "error").mockImplementation(() => undefined);
   });
@@ -49,7 +59,7 @@ describe("DocumentWorkspace", () => {
     await screen.findByText("biology-notes.pdf");
   });
 
-  it("renders persisted document metadata", async () => {
+  it("renders persisted document metadata and makes processed documents chunkable", async () => {
     mocks.getDocument.mockResolvedValue(document);
     renderWorkspace();
     expect(await screen.findByText("biology-notes.pdf")).toBeInTheDocument();
@@ -58,7 +68,50 @@ describe("DocumentWorkspace", () => {
     expect(screen.getByText("1.5 MiB")).toBeInTheDocument();
     expect(screen.getByText("12")).toBeInTheDocument();
     expect(screen.getByText("Processed")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Create chunks" })).toBeEnabled();
     expect(mocks.getDocument).toHaveBeenCalledWith("document-123");
+  });
+
+  it.each(["uploaded", "processing", "failed", "chunked", "embedded"])("does not offer chunk creation for %s documents", async (status) => {
+    mocks.getDocument.mockResolvedValue({ ...document, status });
+    renderWorkspace();
+    await screen.findByText(knownLabel(status));
+    expect(screen.queryByRole("button", { name: /Create chunks/ })).not.toBeInTheDocument();
+  });
+
+  it("disables duplicate submission and reports pending progress", async () => {
+    let resolveChunks: () => void;
+    mocks.getDocument.mockResolvedValue(document);
+    mocks.createDocumentChunks.mockReturnValue(new Promise<void>((resolve) => { resolveChunks = resolve; }));
+    renderWorkspace();
+    fireEvent.click(await screen.findByRole("button", { name: "Create chunks" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Creating chunks..." })).toBeDisabled());
+    expect(screen.getByRole("status")).toHaveTextContent("Creating document chunks...");
+    resolveChunks!();
+  });
+
+  it("invalidates persisted document metadata after creating chunks", async () => {
+    mocks.getDocument.mockResolvedValueOnce(document).mockResolvedValueOnce({ ...document, status: "chunked" });
+    mocks.createDocumentChunks.mockResolvedValue({ document_id: document.id, status: "chunked", page_count: 12, chunk_count: 3 });
+    const { queryClient } = renderWorkspace();
+    const invalidateQueries = vi.spyOn(queryClient, "invalidateQueries");
+
+    fireEvent.click(await screen.findByRole("button", { name: "Create chunks" }));
+
+    await waitFor(() => expect(mocks.createDocumentChunks).toHaveBeenCalledWith(document.id));
+    await waitFor(() => expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: ["document", document.id] }));
+    expect(await screen.findByText("Chunked")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Create chunks/ })).not.toBeInTheDocument();
+  });
+
+  it("renders a safe chunking error", async () => {
+    mocks.getDocument.mockResolvedValue(document);
+    mocks.createDocumentChunks.mockRejectedValue(new DocumentChunkingError("Document is not ready for chunking."));
+    renderWorkspace();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Create chunks" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("Document is not ready for chunking.");
   });
 
   it("renders unknown backend statuses safely", async () => {
@@ -84,3 +137,14 @@ describe("DocumentWorkspace", () => {
     expect(screen.getByText("Please try again in a moment.")).toBeInTheDocument();
   });
 });
+
+function knownLabel(status: string): string {
+  const labels: Record<string, string> = {
+    uploaded: "Uploaded",
+    processing: "Processing",
+    failed: "Failed",
+    chunked: "Chunked",
+    embedded: "Embedded",
+  };
+  return labels[status] ?? status;
+}
