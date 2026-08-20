@@ -2,7 +2,11 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const mocks = vi.hoisted(() => ({ createDocumentChunks: vi.fn(), getDocument: vi.fn() }));
+const mocks = vi.hoisted(() => ({
+  createDocumentChunks: vi.fn(),
+  createDocumentEmbeddings: vi.fn(),
+  getDocument: vi.fn(),
+}));
 
 vi.mock("@/lib/api/documents", () => ({
   DocumentChunkingError: class DocumentChunkingError extends Error {
@@ -15,11 +19,17 @@ vi.mock("@/lib/api/documents", () => ({
       super(message);
     }
   },
+  DocumentEmbeddingError: class DocumentEmbeddingError extends Error {
+    constructor(message: string) {
+      super(message);
+    }
+  },
   createDocumentChunks: mocks.createDocumentChunks,
+  createDocumentEmbeddings: mocks.createDocumentEmbeddings,
   getDocument: mocks.getDocument,
 }));
 
-import { DocumentChunkingError, DocumentFetchError } from "@/lib/api/documents";
+import { DocumentChunkingError, DocumentEmbeddingError, DocumentFetchError } from "@/lib/api/documents";
 import { DocumentWorkspace } from "./document-workspace";
 
 const document = {
@@ -44,6 +54,7 @@ function renderWorkspace() {
 describe("DocumentWorkspace", () => {
   beforeEach(() => {
     mocks.createDocumentChunks.mockReset();
+    mocks.createDocumentEmbeddings.mockReset();
     mocks.getDocument.mockReset();
     vi.spyOn(console, "error").mockImplementation(() => undefined);
   });
@@ -114,6 +125,75 @@ describe("DocumentWorkspace", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent("Document is not ready for chunking.");
   });
 
+  it("offers embedding creation only for a chunked document", async () => {
+    mocks.getDocument.mockResolvedValue({ ...document, status: "chunked" });
+    renderWorkspace();
+
+    expect(await screen.findByRole("button", { name: "Create embeddings" })).toBeEnabled();
+  });
+
+  it.each(["uploaded", "processing", "processed", "failed", "embedded"])(
+    "does not offer embedding creation for %s documents",
+    async (status) => {
+      mocks.getDocument.mockResolvedValue({ ...document, status });
+      renderWorkspace();
+
+      await screen.findByText(knownLabel(status));
+      expect(screen.queryByRole("button", { name: /Create embeddings/ })).not.toBeInTheDocument();
+    },
+  );
+
+  it("disables duplicate embedding submission and reports pending progress", async () => {
+    let resolveEmbeddings: () => void;
+    mocks.getDocument.mockResolvedValue({ ...document, status: "chunked" });
+    mocks.createDocumentEmbeddings.mockReturnValue(
+      new Promise<void>((resolve) => { resolveEmbeddings = resolve; }),
+    );
+    renderWorkspace();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Create embeddings" }));
+
+    await waitFor(() => expect(screen.getByRole("button", { name: "Creating embeddings..." })).toBeDisabled());
+    expect(screen.getByRole("status")).toHaveTextContent("Creating document embeddings...");
+    expect(mocks.createDocumentEmbeddings).toHaveBeenCalledTimes(1);
+    resolveEmbeddings!();
+  });
+
+  it("refetches metadata and renders the persisted embedded state", async () => {
+    mocks.getDocument
+      .mockResolvedValueOnce({ ...document, status: "chunked" })
+      .mockResolvedValueOnce({ ...document, status: "embedded" });
+    mocks.createDocumentEmbeddings.mockResolvedValue({
+      document_id: document.id,
+      status: "embedded",
+      chunk_count: 3,
+      embedded_count: 3,
+      model: "embeddinggemma",
+      dimensions: 768,
+    });
+    const { queryClient } = renderWorkspace();
+    const invalidateQueries = vi.spyOn(queryClient, "invalidateQueries");
+
+    fireEvent.click(await screen.findByRole("button", { name: "Create embeddings" }));
+
+    await waitFor(() => expect(mocks.createDocumentEmbeddings).toHaveBeenCalledWith(document.id));
+    await waitFor(() => expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: ["document", document.id] }));
+    expect(await screen.findByText("Embedded")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Create embeddings/ })).not.toBeInTheDocument();
+  });
+
+  it("renders a safe embedding error", async () => {
+    mocks.getDocument.mockResolvedValue({ ...document, status: "chunked" });
+    mocks.createDocumentEmbeddings.mockRejectedValue(
+      new DocumentEmbeddingError("Embedding service unavailable"),
+    );
+    renderWorkspace();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Create embeddings" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("Embedding service unavailable");
+  });
+
   it("renders unknown backend statuses safely", async () => {
     mocks.getDocument.mockResolvedValue({ ...document, status: "archived" });
     renderWorkspace();
@@ -142,6 +222,7 @@ function knownLabel(status: string): string {
   const labels: Record<string, string> = {
     uploaded: "Uploaded",
     processing: "Processing",
+    processed: "Processed",
     failed: "Failed",
     chunked: "Chunked",
     embedded: "Embedded",

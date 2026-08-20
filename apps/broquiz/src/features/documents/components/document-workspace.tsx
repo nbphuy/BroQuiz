@@ -3,7 +3,9 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   createDocumentChunks,
+  createDocumentEmbeddings,
   DocumentChunkingError,
+  DocumentEmbeddingError,
   DocumentFetchError,
   getDocument,
   type UploadedDocument,
@@ -84,6 +86,10 @@ export function DocumentWorkspace({ documentId }: DocumentWorkspaceProps) {
     mutationFn: () => createDocumentChunks(documentId),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["document", documentId] }),
   });
+  const embeddingMutation = useMutation({
+    mutationFn: () => createDocumentEmbeddings(documentId),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["document", documentId] }),
+  });
 
   if (documentQuery.isPending) {
     return <main className="mx-auto flex min-h-screen w-full max-w-2xl flex-col justify-center px-6 py-16"><p role="status">Loading document...</p></main>;
@@ -98,10 +104,16 @@ export function DocumentWorkspace({ documentId }: DocumentWorkspaceProps) {
   }
 
   const canCreateChunks = documentQuery.data.status === "processed";
+  const canCreateEmbeddings = documentQuery.data.status === "chunked";
   const chunkingError = chunkingMutation.error
     ? chunkingMutation.error instanceof DocumentChunkingError
       ? chunkingMutation.error.message
       : "Unable to create document chunks. Please try again."
+    : null;
+  const embeddingError = embeddingMutation.error
+    ? embeddingMutation.error instanceof DocumentEmbeddingError
+      ? embeddingMutation.error.message
+      : "Unable to create document embeddings. Please try again."
     : null;
 
   return (
@@ -122,6 +134,20 @@ export function DocumentWorkspace({ documentId }: DocumentWorkspaceProps) {
             </button>
             {chunkingMutation.isPending ? <p className="mt-2 text-sm text-muted-foreground" role="status">Creating document chunks...</p> : null}
             {chunkingError ? <p className="mt-2 text-sm text-destructive" role="alert">{chunkingError}</p> : null}
+          </div>
+        ) : null}
+        {canCreateEmbeddings ? (
+          <div className="mt-6">
+            <button
+              type="button"
+              onClick={() => embeddingMutation.mutate()}
+              disabled={embeddingMutation.isPending}
+              className="rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {embeddingMutation.isPending ? "Creating embeddings..." : "Create embeddings"}
+            </button>
+            {embeddingMutation.isPending ? <p className="mt-2 text-sm text-muted-foreground" role="status">Creating document embeddings...</p> : null}
+            {embeddingError ? <p className="mt-2 text-sm text-destructive" role="alert">{embeddingError}</p> : null}
           </div>
         ) : null}
       </section>
