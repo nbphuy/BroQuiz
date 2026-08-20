@@ -4,7 +4,7 @@ import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
-from sqlalchemy import delete
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from app.config import settings
@@ -121,7 +121,20 @@ def chunk_document(db: Session, document_id: uuid.UUID) -> ChunkingResult:
     document = db.get(Document, document_id)
     if document is None:
         raise DocumentChunkingError(404, "Document not found.")
-    if document.status not in {"processed", "chunked"}:
+    if document.status == "chunked":
+        existing_chunks = list(
+            db.scalars(
+                select(DocumentChunk)
+                .where(DocumentChunk.document_id == document.id)
+                .order_by(DocumentChunk.chunk_index)
+            )
+        )
+        return ChunkingResult(
+            document=document,
+            page_count=document.page_count or 0,
+            chunk_count=len(existing_chunks),
+        )
+    if document.status != "processed":
         raise DocumentChunkingError(409, "Document is not ready for chunking.")
 
     pdf_path = Path(settings.upload_directory) / f"{document.id}.pdf"

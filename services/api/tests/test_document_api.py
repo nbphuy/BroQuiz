@@ -4,9 +4,11 @@ from datetime import UTC, datetime
 import pytest
 from fastapi.testclient import TestClient
 
+from app.api import documents as documents_api
 from app.database import get_db
 from app.main import app
 from app.models.document import Document
+from app.services.chunking_service import ChunkingResult, DocumentChunkingError
 
 
 @pytest.fixture
@@ -57,6 +59,50 @@ def test_get_document_returns_404_for_nonexistent_uuid(client: TestClient) -> No
     assert response.json() == {"detail": "Document not found."}
 
 
-def test_get_document_is_in_openapi_with_document_response_schema(client: TestClient) -> None:
-    operation = client.get("/openapi.json").json()["paths"]["/documents/{document_id}"]["get"]
+def test_create_document_chunks_returns_the_persisted_chunking_summary(
+    client: TestClient, stored_document: Document, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    stored_document.status = "chunked"
+    monkeypatch.setattr(
+        documents_api,
+        "chunk_document",
+        lambda db, document_id: ChunkingResult(stored_document, page_count=2, chunk_count=3),
+    )
 
+    response = client.post(f"/documents/{stored_document.id}/chunks")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "document_id": str(stored_document.id),
+        "status": "chunked",
+        "page_count": 2,
+        "chunk_count": 3,
+    }
+
+
+@pytest.mark.parametrize("status_code, detail", [(404, "Document not found."), (409, "Document is not ready for chunking.")])
+def test_create_document_chunks_exposes_safe_lifecycle_errors(
+    client: TestClient,
+    stored_document: Document,
+    monkeypatch: pytest.MonkeyPatch,
+    status_code: int,
+    detail: str,
+) -> None:
+    def fail_chunking(db, document_id):  # noqa: ANN001
+        raise DocumentChunkingError(status_code, detail)
+
+    monkeypatch.setattr(documents_api, "chunk_document", fail_chunking)
+
+    response = client.post(f"/documents/{stored_document.id}/chunks")
+
+    assert response.status_code == status_code
+    assert response.json() == {"detail": detail}
+
+
+def test_document_endpoints_are_in_openapi_with_typed_response_schemas(client: TestClient) -> None:
+    paths = client.get("/openapi.json").json()["paths"]
+    document_operation = paths["/documents/{document_id}"]["get"]
+    chunking_operation = paths["/documents/{document_id}/chunks"]["post"]
+
+    assert document_operation["responses"]["200"]["content"]["application/json"]["schema"]["$ref"].endswith("/DocumentResponse")
+    assert chunking_operation["responses"]["200"]["content"]["application/json"]["schema"]["$ref"].endswith("/DocumentChunkingResponse")
