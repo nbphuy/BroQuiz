@@ -2,7 +2,7 @@ import uuid
 from datetime import datetime
 from typing import Annotated
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from app.config import settings
 
@@ -34,6 +34,9 @@ class GeneratedQuestion(BaseModel):
         cleaned = [option.strip() for option in value]
         if any(not option for option in cleaned):
             raise ValueError("options must not be empty")
+        normalized = {" ".join(option.split()).casefold() for option in cleaned}
+        if len(normalized) != len(cleaned):
+            raise ValueError("options must not contain duplicates")
         return cleaned
 
 
@@ -49,10 +52,29 @@ class GeneratedQuiz(BaseModel):
             raise ValueError("title must not be empty")
         return value
 
+    @model_validator(mode="after")
+    def validate_unique_questions(self) -> "GeneratedQuiz":
+        normalized = {
+            " ".join(question.question.split()).casefold()
+            for question in self.questions
+        }
+        if len(normalized) != len(self.questions):
+            raise ValueError("questions must not contain duplicates")
+        return self
+
 
 class QuizGenerationRequest(BaseModel):
     topic: Annotated[str, Field(min_length=1)]
-    question_count: int = Field(default_factory=lambda: settings.quiz_default_question_count)
+    question_count: int = Field(
+        default_factory=lambda: settings.quiz_default_question_count,
+        ge=1,
+        le=settings.quiz_max_question_count,
+    )
+    top_k: int = Field(
+        default_factory=lambda: settings.quiz_retrieval_top_k,
+        ge=1,
+        le=settings.retrieval_max_top_k,
+    )
 
     @field_validator("topic")
     @classmethod
@@ -61,14 +83,6 @@ class QuizGenerationRequest(BaseModel):
         if not value:
             raise ValueError("topic must not be empty")
         return value
-
-    @field_validator("question_count")
-    @classmethod
-    def validate_question_count(cls, value: int) -> int:
-        if not 1 <= value <= settings.quiz_max_question_count:
-            raise ValueError(f"question_count must be between 1 and {settings.quiz_max_question_count}")
-        return value
-
 
 class QuizResponse(GeneratedQuiz):
     id: uuid.UUID

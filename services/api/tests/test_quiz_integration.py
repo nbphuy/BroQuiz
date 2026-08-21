@@ -67,14 +67,22 @@ def test_real_grounded_quiz_generation_pipeline() -> None:
 
             response = client.post(
                 f"/documents/{document_id}/quiz/generate",
-                json={"topic": "human-computer interaction and usability", "question_count": 3},
+                json={
+                    "topic": "human-computer interaction and usability",
+                    "question_count": 3,
+                    "top_k": 5,
+                },
             )
             assert response.status_code == 200, response.text
             payload = response.json()
             quiz_id = payload["id"]
             assert len(payload["questions"]) == 3
+            assert len({question["question"].strip().casefold() for question in payload["questions"]}) == 3
             for question in payload["questions"]:
+                assert question["question"].strip()
                 assert len(question["options"]) == 4
+                assert all(option.strip() for option in question["options"])
+                assert len({option.strip().casefold() for option in question["options"]}) == 4
                 assert 0 <= question["correct_answer"] <= 3
                 assert question["explanation"].strip()
                 assert question["sources"]
@@ -88,6 +96,7 @@ def test_real_grounded_quiz_generation_pipeline() -> None:
                 assert {"quizzes", "questions", "question_options", "question_sources"} <= set(inspect(db.bind).get_table_names())
                 assert db.get(Document, document_id) is not None
                 assert db.get(Quiz, quiz_id) is not None
+                assert db.get(Document, document_id).status == "embedded"
                 assert len(list(db.scalars(select(Question).where(Question.quiz_id == quiz_id)))) == 3
                 assert db.scalar(select(func.count(QuestionOption.id)).join(Question).where(Question.quiz_id == quiz_id)) == 12
                 assert db.scalar(select(func.count(QuestionSource.id)).join(Question).where(Question.quiz_id == quiz_id)) >= 3

@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const mocks = vi.hoisted(() => ({
   createDocumentChunks: vi.fn(),
   createDocumentEmbeddings: vi.fn(),
+  generateDocumentQuiz: vi.fn(),
   getDocument: vi.fn(),
   searchDocument: vi.fn(),
 }));
@@ -36,7 +37,17 @@ vi.mock("@/lib/api/documents", () => ({
   searchDocument: mocks.searchDocument,
 }));
 
+vi.mock("@/lib/api/quizzes", () => ({
+  QuizGenerationError: class QuizGenerationError extends Error {
+    constructor(message: string) {
+      super(message);
+    }
+  },
+  generateDocumentQuiz: mocks.generateDocumentQuiz,
+}));
+
 import { DocumentChunkingError, DocumentEmbeddingError, DocumentFetchError, DocumentSearchError } from "@/lib/api/documents";
+import { QuizGenerationError } from "@/lib/api/quizzes";
 import { DocumentWorkspace } from "./document-workspace";
 
 const document = {
@@ -77,6 +88,23 @@ const searchResponse = {
   ],
 };
 
+const quizResponse = {
+  id: "quiz-456",
+  document_id: document.id,
+  title: "HCI Quiz",
+  topic: "human interfaces",
+  status: "ready",
+  questions: [
+    {
+      question: "What do interfaces support?",
+      options: ["Interaction", "Fuel storage", "Road building", "Weather prediction"],
+      correct_answer: 0,
+      explanation: "The retrieved source says interfaces support interaction.",
+      sources: [{ chunk_id: "chunk-1", page_number: 4, chunk_index: 2 }],
+    },
+  ],
+};
+
 function renderWorkspace() {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, throwOnError: false } } });
   return {
@@ -89,6 +117,7 @@ describe("DocumentWorkspace", () => {
   beforeEach(() => {
     mocks.createDocumentChunks.mockReset();
     mocks.createDocumentEmbeddings.mockReset();
+    mocks.generateDocumentQuiz.mockReset();
     mocks.getDocument.mockReset();
     mocks.searchDocument.mockReset();
     vi.spyOn(console, "error").mockImplementation(() => undefined);
@@ -312,6 +341,82 @@ describe("DocumentWorkspace", () => {
     fireEvent.click(screen.getByRole("button", { name: "Search" }));
 
     expect(await screen.findByRole("alert")).toHaveTextContent("Embedding service unavailable.");
+  });
+
+  it("shows quiz generation only for embedded documents with conservative defaults", async () => {
+    mocks.getDocument.mockResolvedValue({ ...document, status: "embedded" });
+    renderWorkspace();
+
+    expect(await screen.findByRole("heading", { name: "Generate quiz" })).toBeInTheDocument();
+    expect(screen.getByRole("spinbutton", { name: "Questions" })).toHaveValue(5);
+    expect(screen.getByRole("spinbutton", { name: "Source chunks" })).toHaveValue(5);
+
+    mocks.getDocument.mockResolvedValue({ ...document, status: "processed" });
+    renderWorkspace();
+    await screen.findAllByText("Processed");
+    expect(screen.getAllByRole("heading", { name: "Generate quiz" })).toHaveLength(1);
+  });
+
+  it("generates a typed quiz and renders a read-only persisted preview", async () => {
+    mocks.getDocument.mockResolvedValue({ ...document, status: "embedded" });
+    mocks.generateDocumentQuiz.mockResolvedValue(quizResponse);
+    renderWorkspace();
+
+    fireEvent.change(await screen.findByRole("textbox", { name: "Topic" }), {
+      target: { value: "  human interfaces  " },
+    });
+    fireEvent.change(screen.getByRole("spinbutton", { name: "Questions" }), {
+      target: { value: "1" },
+    });
+    fireEvent.change(screen.getByRole("spinbutton", { name: "Source chunks" }), {
+      target: { value: "7" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Generate quiz" }));
+
+    await waitFor(() => expect(mocks.generateDocumentQuiz).toHaveBeenCalledWith(
+      document.id,
+      { topic: "human interfaces", question_count: 1, top_k: 7 },
+    ));
+    expect(await screen.findByRole("heading", { name: "HCI Quiz" })).toBeInTheDocument();
+    expect(screen.getByText(/Persisted quiz/)).toHaveTextContent("quiz-456");
+    expect(screen.getByText("Interaction (correct)")).toBeInTheDocument();
+    expect(screen.getByText(/page 4, chunk 2/)).toBeInTheDocument();
+    expect(screen.queryByRole("radio")).not.toBeInTheDocument();
+  });
+
+  it("prevents duplicate quiz generation and announces progress", async () => {
+    let resolveGeneration: (value: typeof quizResponse) => void;
+    mocks.getDocument.mockResolvedValue({ ...document, status: "embedded" });
+    mocks.generateDocumentQuiz.mockReturnValue(
+      new Promise<typeof quizResponse>((resolve) => { resolveGeneration = resolve; }),
+    );
+    renderWorkspace();
+
+    fireEvent.change(await screen.findByRole("textbox", { name: "Topic" }), {
+      target: { value: "interfaces" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Generate quiz" }));
+
+    await waitFor(() => expect(screen.getByRole("button", { name: "Generating quiz..." })).toBeDisabled());
+    fireEvent.click(screen.getByRole("button", { name: "Generating quiz..." }));
+    expect(mocks.generateDocumentQuiz).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole("status")).toHaveTextContent("Retrieving source chunks and generating the quiz...");
+    resolveGeneration!(quizResponse);
+  });
+
+  it("renders a safe quiz-generation error", async () => {
+    mocks.getDocument.mockResolvedValue({ ...document, status: "embedded" });
+    mocks.generateDocumentQuiz.mockRejectedValue(
+      new QuizGenerationError("Quiz generation service is unavailable."),
+    );
+    renderWorkspace();
+
+    fireEvent.change(await screen.findByRole("textbox", { name: "Topic" }), {
+      target: { value: "interfaces" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Generate quiz" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("Quiz generation service is unavailable.");
   });
 
   it("renders unknown backend statuses safely", async () => {

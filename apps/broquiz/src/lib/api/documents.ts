@@ -43,7 +43,7 @@ export class DocumentSearchError extends Error {
   }
 }
 
-function getBackendErrorMessage(error: unknown): string | undefined {
+export function getBackendErrorMessage(error: unknown): string | undefined {
   if (typeof error !== "object" || error === null || !("detail" in error)) return undefined;
   const { detail } = error;
   if (typeof detail === "string" && detail.trim()) return detail;

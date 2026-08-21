@@ -8,8 +8,14 @@ from app.api import documents as documents_api
 from app.database import get_db
 from app.main import app
 from app.models.document import Document
+from app.schemas.quiz import (
+    GeneratedQuestion,
+    GeneratedSource,
+    QuizGenerationResponse,
+)
 from app.services.chunking_service import ChunkingResult, DocumentChunkingError
 from app.services.embedding_service import DocumentEmbeddingError, EmbeddingResult
+from app.services.quiz_service import QuizGenerationError
 from app.services.retrieval_service import RetrievedChunk, RetrievalError
 
 
@@ -244,15 +250,138 @@ def test_search_document_exposes_safe_retrieval_errors(
     assert response.json() == {"detail": detail}
 
 
+def quiz_generation_response(document_id: uuid.UUID) -> QuizGenerationResponse:
+    return QuizGenerationResponse(
+        id=uuid.uuid4(),
+        document_id=document_id,
+        title="HCI Quiz",
+        topic="human interfaces",
+        status="ready",
+        questions=[
+            GeneratedQuestion(
+                question="What do interfaces support?",
+                options=["Interaction", "Fuel", "Roads", "Weather"],
+                correct_answer=0,
+                explanation="The retrieved source supports interaction.",
+                sources=[
+                    GeneratedSource(
+                        chunk_id=uuid.uuid4(),
+                        page_number=2,
+                        chunk_index=3,
+                    )
+                ],
+            )
+        ],
+    )
+
+
+def test_generate_quiz_passes_typed_controls_and_returns_persisted_quiz(
+    client: TestClient,
+    stored_document: Document,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    expected = quiz_generation_response(stored_document.id)
+    calls = []
+
+    def generate(db, document_id, topic, question_count, top_k):  # noqa: ANN001
+        calls.append((document_id, topic, question_count, top_k))
+        return expected
+
+    monkeypatch.setattr(documents_api, "generate_quiz", generate)
+    response = client.post(
+        f"/documents/{stored_document.id}/quiz/generate",
+        json={"topic": "  human interfaces  ", "question_count": 1, "top_k": 7},
+    )
+
+    assert response.status_code == 200
+    assert calls == [(stored_document.id, "human interfaces", 1, 7)]
+    assert response.json() == expected.model_dump(mode="json")
+    assert "embedding" not in response.text
+    assert "prompt" not in response.text
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {},
+        {"topic": "   "},
+        {"topic": "valid", "question_count": 0},
+        {"topic": "valid", "question_count": 11},
+        {"topic": "valid", "top_k": 0},
+        {"topic": "valid", "top_k": 21},
+    ],
+)
+def test_generate_quiz_rejects_invalid_requests(
+    client: TestClient,
+    stored_document: Document,
+    payload: dict,
+) -> None:
+    response = client.post(
+        f"/documents/{stored_document.id}/quiz/generate",
+        json=payload,
+    )
+    assert response.status_code == 422
+
+
+@pytest.mark.parametrize(
+    "status_code,detail",
+    [
+        (404, "Document not found."),
+        (409, "Document is not embedded and cannot be searched."),
+        (409, "Document has incomplete embeddings."),
+        (503, "Quiz generation service is unavailable."),
+        (502, "Quiz generation returned an invalid response."),
+        (500, "Unable to persist quiz."),
+    ],
+)
+def test_generate_quiz_exposes_only_safe_service_errors(
+    client: TestClient,
+    stored_document: Document,
+    monkeypatch: pytest.MonkeyPatch,
+    status_code: int,
+    detail: str,
+) -> None:
+    def fail_generation(*_):
+        raise QuizGenerationError(status_code, detail)
+
+    monkeypatch.setattr(documents_api, "generate_quiz", fail_generation)
+    response = client.post(
+        f"/documents/{stored_document.id}/quiz/generate",
+        json={"topic": "interfaces"},
+    )
+    assert response.status_code == status_code
+    assert response.json() == {"detail": detail}
+
+
+def test_generate_quiz_hides_unexpected_internal_failures(
+    client: TestClient,
+    stored_document: Document,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fail_generation(*_):
+        raise RuntimeError("private Ollama prompt and PostgreSQL details")
+
+    monkeypatch.setattr(documents_api, "generate_quiz", fail_generation)
+    response = client.post(
+        f"/documents/{stored_document.id}/quiz/generate",
+        json={"topic": "interfaces"},
+    )
+    assert response.status_code == 500
+    assert response.json() == {"detail": "Unable to generate quiz."}
+
+
 def test_document_endpoints_are_in_openapi_with_typed_response_schemas(client: TestClient) -> None:
     paths = client.get("/openapi.json").json()["paths"]
     document_operation = paths["/documents/{document_id}"]["get"]
     chunking_operation = paths["/documents/{document_id}/chunks"]["post"]
     embedding_operation = paths["/documents/{document_id}/embeddings"]["post"]
     search_operation = paths["/documents/{document_id}/search"]["post"]
+    quiz_operation = paths["/documents/{document_id}/quiz/generate"]["post"]
 
     assert document_operation["responses"]["200"]["content"]["application/json"]["schema"]["$ref"].endswith("/DocumentResponse")
     assert chunking_operation["responses"]["200"]["content"]["application/json"]["schema"]["$ref"].endswith("/DocumentChunkingResponse")
     assert embedding_operation["responses"]["200"]["content"]["application/json"]["schema"]["$ref"].endswith("/DocumentEmbeddingResponse")
     assert search_operation["requestBody"]["content"]["application/json"]["schema"]["$ref"].endswith("/DocumentSearchRequest")
     assert search_operation["responses"]["200"]["content"]["application/json"]["schema"]["$ref"].endswith("/DocumentSearchResponse")
+    assert quiz_operation["requestBody"]["content"]["application/json"]["schema"]["$ref"].endswith("/QuizGenerationRequest")
+    assert quiz_operation["responses"]["200"]["content"]["application/json"]["schema"]["$ref"].endswith("/QuizGenerationResponse")

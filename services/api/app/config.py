@@ -59,8 +59,10 @@ class Settings(BaseSettings):
             raise ValueError("llm_provider must be ollama")
         if not self.ollama_llm_model.strip():
             raise ValueError("ollama_llm_model must not be empty")
-        if self.quiz_retrieval_top_k <= 0:
-            raise ValueError("quiz_retrieval_top_k must be positive")
+        if not 1 <= self.quiz_retrieval_top_k <= self.retrieval_max_top_k:
+            raise ValueError(
+                "quiz_retrieval_top_k must be at least one and no greater than retrieval_max_top_k"
+            )
         if not 1 <= self.quiz_default_question_count <= self.quiz_max_question_count:
             raise ValueError(
                 "quiz_default_question_count must be at least one and no greater than quiz_max_question_count"

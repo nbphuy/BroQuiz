@@ -182,7 +182,7 @@ uv run python -c "from app.main import app; print(*app.openapi()['paths'].keys()
 | POST | `/documents/{document_id}/chunks` | Chunks a `processed` or already `chunked` document. |
 | POST | `/documents/{document_id}/embeddings` | Embeds a `chunked` or already `embedded` document through Ollama. |
 | POST | `/documents/{document_id}/search` | Searches an `embedded` document using a query and `top_k`. |
-| POST | `/documents/{document_id}/quiz/generate` | Retrieves source chunks and generates/persists a grounded quiz for an embedded document. |
+| POST | `/documents/{document_id}/quiz/generate` | Retrieves source chunks using `topic`/`top_k` and generates/persists a grounded quiz for an embedded document. |
 | GET | `/quizzes/{quiz_id}` | Database-only retrieval of a persisted quiz; does not invoke Ollama. |
 | POST | `/quizzes/{quiz_id}/attempts` | Creates an in-progress attempt with answer-safe questions. |
 | POST | `/attempts/{attempt_id}/submit` | Scores submitted option indexes and persists the result. |
@@ -297,23 +297,23 @@ Invoke-RestMethod -Method Post -Uri "http://127.0.0.1:8000/documents/$documentId
 
 ### Generate and persist a local quiz
 
-Run from: any directory. Quiz generation performs semantic retrieval first (configured retrieval count: 5), asks local `qwen3:1.7b` for Pydantic-validated structured output, validates cited chunks against the retrieved context, and persists the quiz. The body has `topic` and optional `question_count`; default is 5, maximum is 10.
+Run from: any directory. Quiz generation calls the same document-scoped pgvector retrieval service used by semantic search, asks the configured Ollama text-generation model (`qwen3:1.7b` by default) for schema-constrained output, validates the complete quiz and cited chunks, then commits the quiz graph atomically. Retrieved document text is delimited and treated as untrusted source data rather than model instructions. The body has `topic`, optional `question_count` (default 5, range 1–10), and optional `top_k` (default 5, range 1–20).
 
 CMD:
 
 ```cmd
-curl.exe -X POST "http://127.0.0.1:8000/documents/<DOCUMENT_ID>/quiz/generate" -H "Content-Type: application/json" -d "{\"topic\":\"Human-computer interaction\",\"question_count\":3}"
+curl.exe -X POST "http://127.0.0.1:8000/documents/<DOCUMENT_ID>/quiz/generate" -H "Content-Type: application/json" -d "{\"topic\":\"Human-computer interaction\",\"question_count\":3,\"top_k\":5}"
 ```
 
 PowerShell:
 
 ```powershell
 $documentId = '<DOCUMENT_ID>'
-$body = @{ topic = 'Human-computer interaction'; question_count = 3 } | ConvertTo-Json
+$body = @{ topic = 'Human-computer interaction'; question_count = 3; top_k = 5 } | ConvertTo-Json
 Invoke-RestMethod -Method Post -Uri "http://127.0.0.1:8000/documents/$documentId/quiz/generate" -ContentType 'application/json' -Body $body
 ```
 
-The response includes persisted `id` (save it as `<QUIZ_ID>`), `document_id`, `title`, `topic`, `status`, and `questions`. Each quiz question has `question`, exactly four `options`, `correct_answer`, `explanation`, and `sources` (`chunk_id`, `page_number`, optional `chunk_index`).
+The response includes persisted `id` (save it as `<QUIZ_ID>`), `document_id`, `title`, `topic`, `status`, and `questions`. Each quiz question has `question`, exactly four unique nonblank `options`, one valid `correct_answer` index, `explanation`, and retrieved-source provenance (`chunk_id`, `page_number`, optional `chunk_index`). Duplicate questions, fabricated citations, malformed structured output, and partial quizzes are rejected.
 
 ### Get the persisted quiz
 
@@ -424,7 +424,7 @@ $response = Invoke-RestMethod -Method Post -Uri http://localhost:11434/api/embed
 $response.embeddings[0].Count
 ```
 
-The embedding smoke test should report 768 values, matching `EMBEDDING_DIMENSIONS=768`. `ollama list` should show both configured model names. Do not paste escaped `\"` sequences into a PowerShell single-quoted string; build JSON with `ConvertTo-Json` as shown.
+The embedding smoke test should report 768 values, matching `EMBEDDING_DIMENSIONS=768`. `ollama list` should show both configured model names. Retrieval always uses `EMBEDDING_MODEL` (`embeddinggemma`); quiz generation separately uses `OLLAMA_LLM_MODEL` (`qwen3:1.7b`). `LLM_PROVIDER` remains `ollama`. Do not paste escaped `\"` sequences into a PowerShell single-quoted string; build JSON with `ConvertTo-Json` as shown.
 
 ## 11. Testing and opt-in integration tests
 
@@ -436,8 +436,10 @@ CMD:
 uv run pytest
 uv run pytest -v
 uv run pytest tests/test_embedding_service.py -v
+uv run pytest tests/test_quiz_service.py tests/test_llm_provider.py tests/test_document_api.py -v
 set BROQUIZ_RUN_INTEGRATION=1 && uv run pytest -v
 set BROQUIZ_RUN_INTEGRATION=1 && uv run pytest tests/test_retrieval_integration.py -v
+set BROQUIZ_RUN_INTEGRATION=1 && uv run pytest tests/test_quiz_integration.py -v
 set BROQUIZ_RUN_INTEGRATION=
 ```
 
@@ -447,12 +449,24 @@ PowerShell:
 uv run pytest
 uv run pytest -v
 uv run pytest tests/test_embedding_service.py -v
+uv run pytest tests/test_quiz_service.py tests/test_llm_provider.py tests/test_document_api.py -v
 $env:BROQUIZ_RUN_INTEGRATION = '1'; uv run pytest -v
 $env:BROQUIZ_RUN_INTEGRATION = '1'; uv run pytest tests/test_retrieval_integration.py -v
+$env:BROQUIZ_RUN_INTEGRATION = '1'; uv run pytest tests/test_quiz_integration.py -v
 Remove-Item Env:BROQUIZ_RUN_INTEGRATION
 ```
 
 Normal unit tests use fakes and do not require live PostgreSQL/Ollama. Real integration tests are skipped unless `BROQUIZ_RUN_INTEGRATION=1` and require their local infrastructure: `tests/test_retrieval_integration.py`, `tests/test_quiz_integration.py`, and `tests/test_attempt_integration.py`. The retrieval and quiz integration tests need PostgreSQL and Ollama; the attempt integration test needs PostgreSQL. They create and clean up their own temporary test records (and upload fixture files where applicable).
+
+Frontend M6 verification runs from **apps/broquiz**. Start the FastAPI server before regenerating types; on Windows PowerShell systems that block `npm.ps1`, use `npm.cmd`:
+
+```powershell
+npm.cmd run api:generate
+npm.cmd run typecheck
+npm.cmd run lint
+npm.cmd run test
+npm.cmd run build
+```
 
 ## 12. Alembic migrations
 
@@ -532,6 +546,10 @@ $env:BROQUIZ_RUN_INTEGRATION = '1'; uv run pytest -v
 **Database connection fails or `/health` returns 503.** Confirm Docker Desktop is running, then run `docker compose -f infra/compose.yaml ps` from the repository root. Wait for `db` to report healthy and verify it with `pg_isready` from section 5. Confirm root `.env` agrees with the Compose database/user/password/port values.
 
 **Ollama is unavailable.** Run `ollama list` and `Invoke-RestMethod http://localhost:11434/api/tags` (or the CMD `curl.exe` equivalent). Start the Ollama application/service, then pull `embeddinggemma` and `qwen3:1.7b` if absent.
+
+**Quiz generation returns 503.** Confirm `LLM_PROVIDER=ollama`, verify `OLLAMA_BASE_URL`, and make sure the exact `OLLAMA_LLM_MODEL` value appears in `ollama list`. The generation model is separate from `embeddinggemma`; an embedding-only installation can search but cannot generate quizzes.
+
+**Quiz generation returns 502.** The text-generation model returned malformed or domain-invalid structured output, such as the wrong question count, duplicate choices/questions, or source references outside the retrieved chunks. Retry once; if it persists, inspect server logs and verify the configured model supports Ollama JSON-schema output. API responses intentionally omit raw prompts and provider details.
 
 **Embedding dimension error.** The backend and migration expect 768 dimensions. Verify `EMBEDDING_MODEL=embeddinggemma` and `EMBEDDING_DIMENSIONS=768`, then run the `/api/embed` smoke test and check `$response.embeddings[0].Count`.
 

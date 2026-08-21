@@ -156,7 +156,13 @@ def generate_document_quiz(
     db: Annotated[Session, Depends(get_db)],
 ) -> QuizGenerationResponse:
     try:
-        return generate_quiz(db, document_id, request.topic, request.question_count)
+        return generate_quiz(
+            db,
+            document_id,
+            request.topic,
+            request.question_count,
+            request.top_k,
+        )
     except QuizGenerationError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
     except Exception:

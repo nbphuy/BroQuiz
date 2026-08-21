@@ -463,6 +463,8 @@ export interface components {
             topic: string;
             /** Question Count */
             question_count?: number;
+            /** Top K */
+            top_k?: number;
         };
         /** QuizGenerationResponse */
         QuizGenerationResponse: {

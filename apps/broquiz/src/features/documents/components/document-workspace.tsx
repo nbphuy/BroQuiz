@@ -14,6 +14,11 @@ import {
   type DocumentSearchResponse,
   type UploadedDocument,
 } from "@/lib/api/documents";
+import {
+  generateDocumentQuiz,
+  QuizGenerationError,
+  type QuizGenerationResponse,
+} from "@/lib/api/quizzes";
 
 type DocumentWorkspaceProps = { documentId: string };
 
@@ -180,6 +185,142 @@ function SemanticSearch({ documentId }: { documentId: string }) {
   );
 }
 
+function QuizPreview({ quiz }: { quiz: QuizGenerationResponse | undefined }) {
+  if (!quiz) return null;
+
+  return (
+    <section className="mt-6 rounded-md border bg-background p-4" aria-labelledby="generated-quiz-heading">
+      <p className="text-sm text-muted-foreground" role="status">
+        Persisted quiz <span className="font-mono">{quiz.id}</span>
+      </p>
+      <h3 id="generated-quiz-heading" className="mt-1 text-lg font-semibold">{quiz.title}</h3>
+      <p className="mt-1 text-sm text-muted-foreground">
+        {quiz.questions.length} {quiz.questions.length === 1 ? "question" : "questions"} · Status: {quiz.status}
+      </p>
+      <ol className="mt-4 space-y-5">
+        {quiz.questions.map((question, questionIndex) => (
+          <li key={`${question.question}-${questionIndex}`}>
+            <p className="font-medium">{questionIndex + 1}. {question.question}</p>
+            <ol className="mt-2 grid gap-1 pl-5 text-sm" type="A">
+              {question.options.map((option, optionIndex) => (
+                <li key={`${option}-${optionIndex}`} className={optionIndex === question.correct_answer ? "font-semibold text-primary" : undefined}>
+                  {option}{optionIndex === question.correct_answer ? " (correct)" : ""}
+                </li>
+              ))}
+            </ol>
+            <p className="mt-2 text-sm"><span className="font-medium">Explanation:</span> {question.explanation}</p>
+            <p className="mt-1 text-xs text-muted-foreground">
+              Sources: {question.sources.map((source) => `page ${source.page_number}, chunk ${source.chunk_index ?? "unknown"}`).join("; ")}
+            </p>
+          </li>
+        ))}
+      </ol>
+    </section>
+  );
+}
+
+function QuizGeneration({ documentId }: { documentId: string }) {
+  const [topic, setTopic] = useState("");
+  const [questionCount, setQuestionCount] = useState(5);
+  const [topK, setTopK] = useState(5);
+  const generationMutation = useMutation({
+    mutationFn: ({ topic, questionCount, topK }: { topic: string; questionCount: number; topK: number }) =>
+      generateDocumentQuiz(documentId, {
+        topic,
+        question_count: questionCount,
+        top_k: topK,
+      }),
+  });
+  const generationError = generationMutation.error
+    ? generationMutation.error instanceof QuizGenerationError
+      ? generationMutation.error.message
+      : "Unable to generate a quiz. Please try again."
+    : null;
+
+  function handleSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const trimmedTopic = topic.trim();
+    if (
+      !trimmedTopic
+      || questionCount < 1
+      || questionCount > 10
+      || topK < 1
+      || topK > 20
+      || generationMutation.isPending
+    ) return;
+    generationMutation.mutate({ topic: trimmedTopic, questionCount, topK });
+  }
+
+  return (
+    <section className="mt-8 border-t pt-6" aria-labelledby="quiz-generation-heading">
+      <h2 id="quiz-generation-heading" className="text-xl font-semibold">Generate quiz</h2>
+      <p className="mt-1 text-sm text-muted-foreground">
+        Create and persist a grounded multiple-choice quiz from the most relevant embedded chunks.
+      </p>
+      <form className="mt-4 grid gap-4 sm:grid-cols-2" onSubmit={handleSubmit}>
+        <div className="sm:col-span-2">
+          <label htmlFor="quiz-topic" className="text-sm font-medium">Topic</label>
+          <input
+            id="quiz-topic"
+            name="topic"
+            type="text"
+            required
+            value={topic}
+            onChange={(event) => setTopic(event.target.value)}
+            disabled={generationMutation.isPending}
+            className="mt-1 w-full rounded-md border bg-background px-3 py-2 text-sm disabled:cursor-not-allowed disabled:opacity-50"
+            placeholder="What should the quiz focus on?"
+          />
+        </div>
+        <div>
+          <label htmlFor="quiz-question-count" className="text-sm font-medium">Questions</label>
+          <input
+            id="quiz-question-count"
+            name="question_count"
+            type="number"
+            min={1}
+            max={10}
+            required
+            value={questionCount}
+            onChange={(event) => setQuestionCount(Number(event.target.value))}
+            disabled={generationMutation.isPending}
+            className="mt-1 w-full rounded-md border bg-background px-3 py-2 text-sm disabled:cursor-not-allowed disabled:opacity-50"
+          />
+        </div>
+        <div>
+          <label htmlFor="quiz-top-k" className="text-sm font-medium">Source chunks</label>
+          <input
+            id="quiz-top-k"
+            name="top_k"
+            type="number"
+            min={1}
+            max={20}
+            required
+            value={topK}
+            onChange={(event) => setTopK(Number(event.target.value))}
+            disabled={generationMutation.isPending}
+            className="mt-1 w-full rounded-md border bg-background px-3 py-2 text-sm disabled:cursor-not-allowed disabled:opacity-50"
+          />
+        </div>
+        <div className="sm:col-span-2">
+          <button
+            type="submit"
+            disabled={generationMutation.isPending || !topic.trim()}
+            className="rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {generationMutation.isPending ? "Generating quiz..." : "Generate quiz"}
+          </button>
+        </div>
+      </form>
+      {generationMutation.isPending ? (
+        <p className="mt-3 text-sm text-muted-foreground" role="status">Retrieving source chunks and generating the quiz...</p>
+      ) : null}
+      {generationError ? <p className="mt-3 text-sm text-destructive" role="alert">{generationError}</p> : null}
+      <QuizPreview quiz={generationMutation.data} />
+    </section>
+  );
+}
+
 export function DocumentWorkspace({ documentId }: DocumentWorkspaceProps) {
   const queryClient = useQueryClient();
   const documentQuery = useQuery({
@@ -257,6 +398,7 @@ export function DocumentWorkspace({ documentId }: DocumentWorkspaceProps) {
           </div>
         ) : null}
         {canSearch ? <SemanticSearch documentId={documentId} /> : null}
+        {canSearch ? <QuizGeneration documentId={documentId} /> : null}
       </section>
     </main>
   );
