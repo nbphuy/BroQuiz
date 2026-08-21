@@ -279,7 +279,7 @@ Invoke-RestMethod -Method Post -Uri "http://127.0.0.1:8000/documents/$documentId
 
 ### Semantic search
 
-Run from: any directory. The body is `query` plus optional `top_k`. The configured default is 5 and the maximum is 20. Results are scoped to the document and ranked by pgvector cosine distance; each result includes `chunk_id`, `page_number`, `chunk_index`, `content`, and `distance`.
+Run from: any directory. The body is `query` plus optional `top_k`. The configured default is 5 and the maximum is 20. Results are scoped to the document and ranked by pgvector cosine distance. The response reports `similarity` as `1 - cosine_distance`, so higher values are more similar. Each result includes `chunk_id`, `document_id`, `page_number`, `chunk_index`, `content`, and `similarity`; response metadata includes the result count, embedding model, and dimensions.
 
 CMD:
 

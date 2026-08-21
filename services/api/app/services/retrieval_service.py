@@ -1,8 +1,10 @@
 import logging
+import math
 import uuid
 from dataclasses import dataclass
+from numbers import Real
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
@@ -35,17 +37,24 @@ class RetrievedChunk:
     content: str
     page_number: int
     chunk_index: int
-    cosine_distance: float
+    similarity: float
 
 
 def _embed_query(query: str, provider: EmbeddingProvider) -> list[float]:
     vectors = provider.embed_texts([query])
-    if len(vectors) != 1:
+    if not isinstance(vectors, list) or len(vectors) != 1:
         raise EmbeddingResponseError("Embedding provider returned an unexpected vector count")
     vector = vectors[0]
-    if len(vector) != settings.embedding_dimensions:
+    if not isinstance(vector, (list, tuple)) or len(vector) != settings.embedding_dimensions:
         raise EmbeddingResponseError("Embedding provider returned an invalid vector dimension")
-    return vector
+    if any(
+        not isinstance(value, Real)
+        or isinstance(value, bool)
+        or not math.isfinite(float(value))
+        for value in vector
+    ):
+        raise EmbeddingResponseError("Embedding provider returned a non-numeric vector value")
+    return [float(value) for value in vector]
 
 
 def retrieve_chunks(
@@ -55,7 +64,7 @@ def retrieve_chunks(
     top_k: int,
     provider: EmbeddingProvider | None = None,
 ) -> list[RetrievedChunk]:
-    """Perform exact, document-scoped pgvector cosine-distance retrieval."""
+    """Perform exact, document-scoped pgvector cosine-similarity retrieval."""
     document = db.get(Document, document_id)
     if document is None:
         raise RetrievalError(404, "Document not found.")
@@ -63,37 +72,41 @@ def retrieve_chunks(
         raise RetrievalError(409, "Document is not embedded and cannot be searched.")
 
     try:
-        embedded_chunk_exists = db.scalar(
-            select(DocumentChunk.id)
-            .where(
-                DocumentChunk.document_id == document.id,
-                DocumentChunk.embedding.is_not(None),
-            )
-            .limit(1)
-        )
+        chunk_count, embedded_count = db.execute(
+            select(
+                func.count(DocumentChunk.id),
+                func.count(DocumentChunk.embedding),
+            ).where(DocumentChunk.document_id == document.id)
+        ).one()
+        chunk_count, embedded_count = int(chunk_count), int(embedded_count)
     except SQLAlchemyError as exc:
         logger.exception("Failed to validate embedded chunks")
         raise RetrievalError(500, "Unable to search document chunks.") from exc
-    if embedded_chunk_exists is None:
+    if chunk_count == 0:
         raise RetrievalError(409, "Document has no embedded chunks to search.")
+    if embedded_count != chunk_count:
+        raise RetrievalError(409, "Document has incomplete embeddings.")
 
-    provider = provider or get_embedding_provider()
     try:
+        provider = provider or get_embedding_provider()
         query_embedding = _embed_query(query, provider)
     except EmbeddingServiceUnavailable as exc:
         raise RetrievalError(503, "Embedding service unavailable.") from exc
     except EmbeddingProviderError as exc:
         logger.exception("Embedding provider returned an invalid query embedding")
         raise RetrievalError(500, "Embedding service returned an invalid response.") from exc
+    except Exception as exc:
+        logger.exception("Failed to create query embedding")
+        raise RetrievalError(500, "Unable to create query embedding.") from exc
 
-    distance = DocumentChunk.embedding.cosine_distance(query_embedding).label("distance")
+    distance = DocumentChunk.embedding.cosine_distance(query_embedding).label("cosine_distance")
     statement = (
         select(DocumentChunk, distance)
         .where(
             DocumentChunk.document_id == document.id,
             DocumentChunk.embedding.is_not(None),
         )
-        .order_by(distance.asc(), DocumentChunk.chunk_index.asc())
+        .order_by(distance.asc(), DocumentChunk.chunk_index.asc(), DocumentChunk.id.asc())
         .limit(top_k)
     )
     try:
@@ -109,7 +122,7 @@ def retrieve_chunks(
             content=chunk.content,
             page_number=chunk.page_number,
             chunk_index=chunk.chunk_index,
-            cosine_distance=float(distance_value),
+            similarity=1.0 - float(distance_value),
         )
         for chunk, distance_value in rows
     ]

@@ -1,13 +1,17 @@
 "use client";
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useState, type FormEvent } from "react";
 import {
   createDocumentChunks,
   createDocumentEmbeddings,
   DocumentChunkingError,
   DocumentEmbeddingError,
   DocumentFetchError,
+  DocumentSearchError,
   getDocument,
+  searchDocument,
+  type DocumentSearchResponse,
   type UploadedDocument,
 } from "@/lib/api/documents";
 
@@ -75,6 +79,107 @@ function Metadata({ document }: { document: UploadedDocument }) {
   );
 }
 
+function SearchResults({ result }: { result: DocumentSearchResponse | undefined }) {
+  if (!result) return null;
+  if (result.result_count === 0) {
+    return <p className="mt-4 text-sm text-muted-foreground" role="status">No matching chunks found.</p>;
+  }
+
+  return (
+    <div className="mt-5" aria-live="polite">
+      <p className="text-sm text-muted-foreground" role="status">
+        {result.result_count} ranked {result.result_count === 1 ? "result" : "results"} using {result.embedding_model} ({result.embedding_dimensions} dimensions).
+      </p>
+      <ol className="mt-3 space-y-3">
+        {result.results.map((chunk, index) => (
+          <li key={chunk.chunk_id} className="rounded-md border bg-background p-4">
+            <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-sm">
+              <span className="font-semibold">Rank {index + 1}</span>
+              <span>Similarity {chunk.similarity.toFixed(3)}</span>
+              <span>Chunk index {chunk.chunk_index}</span>
+              <span>Page {chunk.page_number}</span>
+            </div>
+            <p className="mt-3 whitespace-pre-wrap text-sm leading-6">{chunk.content}</p>
+          </li>
+        ))}
+      </ol>
+    </div>
+  );
+}
+
+function SemanticSearch({ documentId }: { documentId: string }) {
+  const [query, setQuery] = useState("");
+  const [topK, setTopK] = useState(5);
+  const searchMutation = useMutation({
+    mutationFn: ({ query, topK }: { query: string; topK: number }) =>
+      searchDocument(documentId, { query, top_k: topK }),
+  });
+  const searchError = searchMutation.error
+    ? searchMutation.error instanceof DocumentSearchError
+      ? searchMutation.error.message
+      : "Unable to search this document. Please try again."
+    : null;
+
+  function handleSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const trimmedQuery = query.trim();
+    if (!trimmedQuery || topK < 1 || topK > 20 || searchMutation.isPending) return;
+    searchMutation.mutate({ query: trimmedQuery, topK });
+  }
+
+  return (
+    <section className="mt-8 border-t pt-6" aria-labelledby="semantic-search-heading">
+      <h2 id="semantic-search-heading" className="text-xl font-semibold">Semantic search</h2>
+      <p className="mt-1 text-sm text-muted-foreground">
+        Inspect the chunks most similar to a query. Higher similarity scores are better.
+      </p>
+      <form className="mt-4 grid gap-4 sm:grid-cols-[1fr_7rem_auto] sm:items-end" onSubmit={handleSubmit}>
+        <div>
+          <label htmlFor="semantic-query" className="text-sm font-medium">Query</label>
+          <input
+            id="semantic-query"
+            name="query"
+            type="search"
+            required
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            disabled={searchMutation.isPending}
+            className="mt-1 w-full rounded-md border bg-background px-3 py-2 text-sm disabled:cursor-not-allowed disabled:opacity-50"
+            placeholder="What concept are you looking for?"
+          />
+        </div>
+        <div>
+          <label htmlFor="semantic-top-k" className="text-sm font-medium">Top results</label>
+          <input
+            id="semantic-top-k"
+            name="top_k"
+            type="number"
+            min={1}
+            max={20}
+            required
+            value={topK}
+            onChange={(event) => setTopK(Number(event.target.value))}
+            disabled={searchMutation.isPending}
+            className="mt-1 w-full rounded-md border bg-background px-3 py-2 text-sm disabled:cursor-not-allowed disabled:opacity-50"
+          />
+        </div>
+        <button
+          type="submit"
+          disabled={searchMutation.isPending || !query.trim()}
+          className="rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          {searchMutation.isPending ? "Searching..." : "Search"}
+        </button>
+      </form>
+      {searchMutation.isPending ? (
+        <p className="mt-3 text-sm text-muted-foreground" role="status">Searching embedded chunks...</p>
+      ) : null}
+      {searchError ? <p className="mt-3 text-sm text-destructive" role="alert">{searchError}</p> : null}
+      <SearchResults result={searchMutation.data} />
+    </section>
+  );
+}
+
 export function DocumentWorkspace({ documentId }: DocumentWorkspaceProps) {
   const queryClient = useQueryClient();
   const documentQuery = useQuery({
@@ -105,6 +210,7 @@ export function DocumentWorkspace({ documentId }: DocumentWorkspaceProps) {
 
   const canCreateChunks = documentQuery.data.status === "processed";
   const canCreateEmbeddings = documentQuery.data.status === "chunked";
+  const canSearch = documentQuery.data.status === "embedded";
   const chunkingError = chunkingMutation.error
     ? chunkingMutation.error instanceof DocumentChunkingError
       ? chunkingMutation.error.message
@@ -117,7 +223,7 @@ export function DocumentWorkspace({ documentId }: DocumentWorkspaceProps) {
     : null;
 
   return (
-    <main className="mx-auto flex min-h-screen w-full max-w-2xl flex-col justify-center px-6 py-16">
+    <main className="mx-auto flex min-h-screen w-full max-w-4xl flex-col justify-center px-6 py-16">
       <section className="rounded-lg border bg-card p-6 shadow-sm" aria-labelledby="workspace-heading">
         <p className="text-sm font-medium text-muted-foreground">Document Processing Workspace</p>
         <h1 id="workspace-heading" className="mt-1 text-2xl font-semibold tracking-tight">Document details</h1>
@@ -150,6 +256,7 @@ export function DocumentWorkspace({ documentId }: DocumentWorkspaceProps) {
             {embeddingError ? <p className="mt-2 text-sm text-destructive" role="alert">{embeddingError}</p> : null}
           </div>
         ) : null}
+        {canSearch ? <SemanticSearch documentId={documentId} /> : null}
       </section>
     </main>
   );

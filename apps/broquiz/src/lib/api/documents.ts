@@ -4,6 +4,8 @@ import type { components, paths } from "./schema";
 export type UploadedDocument = components["schemas"]["DocumentResponse"];
 export type DocumentChunkingResult = components["schemas"]["DocumentChunkingResponse"];
 export type DocumentEmbeddingResult = components["schemas"]["DocumentEmbeddingResponse"];
+export type DocumentSearchRequest = components["schemas"]["DocumentSearchRequest"];
+export type DocumentSearchResponse = components["schemas"]["DocumentSearchResponse"];
 type UploadDocumentRequest = paths["/documents"]["post"]["requestBody"]["content"]["multipart/form-data"];
 
 export class DocumentUploadError extends Error {
@@ -31,6 +33,13 @@ export class DocumentEmbeddingError extends Error {
   constructor(message: string, options?: ErrorOptions) {
     super(message, options);
     this.name = "DocumentEmbeddingError";
+  }
+}
+
+export class DocumentSearchError extends Error {
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
+    this.name = "DocumentSearchError";
   }
 }
 
@@ -110,5 +119,35 @@ export async function createDocumentEmbeddings(documentId: string): Promise<Docu
   } catch (error) {
     if (error instanceof DocumentEmbeddingError) throw error;
     throw new DocumentEmbeddingError("Unable to reach the BroQuiz API. Check that the backend is running.", { cause: error });
+  }
+}
+
+export async function searchDocument(
+  documentId: string,
+  request: DocumentSearchRequest,
+): Promise<DocumentSearchResponse> {
+  try {
+    const { data, error, response } = await apiClient.POST(
+      "/documents/{document_id}/search",
+      {
+        params: { path: { document_id: documentId } },
+        body: request,
+      },
+    );
+    if (!response.ok) {
+      throw new DocumentSearchError(
+        getBackendErrorMessage(error) ?? "Unable to search this document. Please try again.",
+      );
+    }
+    if (!data) {
+      throw new DocumentSearchError("The BroQuiz API completed the search without a result.");
+    }
+    return data;
+  } catch (error) {
+    if (error instanceof DocumentSearchError) throw error;
+    throw new DocumentSearchError(
+      "Unable to reach the BroQuiz API. Check that the backend is running.",
+      { cause: error },
+    );
   }
 }

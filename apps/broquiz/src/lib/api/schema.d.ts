@@ -397,6 +397,12 @@ export interface components {
             query: string;
             /** Top K */
             top_k: number;
+            /** Result Count */
+            result_count: number;
+            /** Embedding Model */
+            embedding_model: string;
+            /** Embedding Dimensions */
+            embedding_dimensions: number;
             /** Results */
             results: components["schemas"]["DocumentSearchResult"][];
         };
@@ -407,14 +413,22 @@ export interface components {
              * Format: uuid
              */
             chunk_id: string;
+            /**
+             * Document Id
+             * Format: uuid
+             */
+            document_id: string;
             /** Page Number */
             page_number: number;
             /** Chunk Index */
             chunk_index: number;
             /** Content */
             content: string;
-            /** Distance */
-            distance: number;
+            /**
+             * Similarity
+             * @description Cosine similarity (1 - cosine distance); higher values are more similar.
+             */
+            similarity: number;
         };
         /** GeneratedQuestion */
         GeneratedQuestion: {

@@ -10,6 +10,7 @@ from app.main import app
 from app.models.document import Document
 from app.services.chunking_service import ChunkingResult, DocumentChunkingError
 from app.services.embedding_service import DocumentEmbeddingError, EmbeddingResult
+from app.services.retrieval_service import RetrievedChunk, RetrievalError
 
 
 @pytest.fixture
@@ -154,12 +155,104 @@ def test_create_document_embeddings_exposes_safe_errors(
     assert response.json() == {"detail": detail}
 
 
+def test_search_document_returns_typed_ranked_results(
+    client: TestClient, stored_document: Document, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    stored_document.status = "embedded"
+    chunk_id = uuid.uuid4()
+    calls = []
+
+    def retrieve(db, document_id, query, top_k):  # noqa: ANN001
+        calls.append((document_id, query, top_k))
+        return [
+            RetrievedChunk(
+                chunk_id=chunk_id,
+                document_id=stored_document.id,
+                content="Human-computer interaction content.",
+                page_number=2,
+                chunk_index=3,
+                similarity=0.875,
+            )
+        ]
+
+    monkeypatch.setattr(documents_api, "retrieve_chunks", retrieve)
+    response = client.post(
+        f"/documents/{stored_document.id}/search",
+        json={"query": "  human interfaces  ", "top_k": 1},
+    )
+
+    assert response.status_code == 200
+    assert calls == [(stored_document.id, "human interfaces", 1)]
+    assert response.json() == {
+        "document_id": str(stored_document.id),
+        "query": "human interfaces",
+        "top_k": 1,
+        "result_count": 1,
+        "embedding_model": "embeddinggemma",
+        "embedding_dimensions": 768,
+        "results": [
+            {
+                "chunk_id": str(chunk_id),
+                "document_id": str(stored_document.id),
+                "page_number": 2,
+                "chunk_index": 3,
+                "content": "Human-computer interaction content.",
+                "similarity": 0.875,
+            }
+        ],
+    }
+    assert "embedding" not in response.json()["results"][0]
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [{}, {"query": "   "}, {"query": "valid", "top_k": 0}, {"query": "valid", "top_k": 21}],
+)
+def test_search_document_rejects_invalid_requests(
+    client: TestClient, stored_document: Document, payload: dict
+) -> None:
+    response = client.post(f"/documents/{stored_document.id}/search", json=payload)
+    assert response.status_code == 422
+
+
+@pytest.mark.parametrize(
+    "status_code, detail",
+    [
+        (404, "Document not found."),
+        (409, "Document is not embedded and cannot be searched."),
+        (409, "Document has incomplete embeddings."),
+        (503, "Embedding service unavailable."),
+        (500, "Unable to search document chunks."),
+    ],
+)
+def test_search_document_exposes_safe_retrieval_errors(
+    client: TestClient,
+    stored_document: Document,
+    monkeypatch: pytest.MonkeyPatch,
+    status_code: int,
+    detail: str,
+) -> None:
+    def fail_retrieval(*args):  # noqa: ANN002
+        raise RetrievalError(status_code, detail)
+
+    monkeypatch.setattr(documents_api, "retrieve_chunks", fail_retrieval)
+    response = client.post(
+        f"/documents/{stored_document.id}/search",
+        json={"query": "interfaces"},
+    )
+    assert response.status_code == status_code
+    assert response.json() == {"detail": detail}
+
+
 def test_document_endpoints_are_in_openapi_with_typed_response_schemas(client: TestClient) -> None:
     paths = client.get("/openapi.json").json()["paths"]
     document_operation = paths["/documents/{document_id}"]["get"]
     chunking_operation = paths["/documents/{document_id}/chunks"]["post"]
     embedding_operation = paths["/documents/{document_id}/embeddings"]["post"]
+    search_operation = paths["/documents/{document_id}/search"]["post"]
 
     assert document_operation["responses"]["200"]["content"]["application/json"]["schema"]["$ref"].endswith("/DocumentResponse")
     assert chunking_operation["responses"]["200"]["content"]["application/json"]["schema"]["$ref"].endswith("/DocumentChunkingResponse")
     assert embedding_operation["responses"]["200"]["content"]["application/json"]["schema"]["$ref"].endswith("/DocumentEmbeddingResponse")
+    assert search_operation["requestBody"]["content"]["application/json"]["schema"]["$ref"].endswith("/DocumentSearchRequest")
+    assert search_operation["responses"]["200"]["content"]["application/json"]["schema"]["$ref"].endswith("/DocumentSearchResponse")

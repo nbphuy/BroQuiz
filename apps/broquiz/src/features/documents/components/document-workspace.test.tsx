@@ -6,6 +6,7 @@ const mocks = vi.hoisted(() => ({
   createDocumentChunks: vi.fn(),
   createDocumentEmbeddings: vi.fn(),
   getDocument: vi.fn(),
+  searchDocument: vi.fn(),
 }));
 
 vi.mock("@/lib/api/documents", () => ({
@@ -24,12 +25,18 @@ vi.mock("@/lib/api/documents", () => ({
       super(message);
     }
   },
+  DocumentSearchError: class DocumentSearchError extends Error {
+    constructor(message: string) {
+      super(message);
+    }
+  },
   createDocumentChunks: mocks.createDocumentChunks,
   createDocumentEmbeddings: mocks.createDocumentEmbeddings,
   getDocument: mocks.getDocument,
+  searchDocument: mocks.searchDocument,
 }));
 
-import { DocumentChunkingError, DocumentEmbeddingError, DocumentFetchError } from "@/lib/api/documents";
+import { DocumentChunkingError, DocumentEmbeddingError, DocumentFetchError, DocumentSearchError } from "@/lib/api/documents";
 import { DocumentWorkspace } from "./document-workspace";
 
 const document = {
@@ -41,6 +48,33 @@ const document = {
   page_count: 12,
   created_at: "2026-08-20T10:00:00Z",
   updated_at: "2026-08-20T10:05:00Z",
+};
+
+const searchResponse = {
+  document_id: document.id,
+  query: "human interfaces",
+  top_k: 5,
+  result_count: 2,
+  embedding_model: "embeddinggemma",
+  embedding_dimensions: 768,
+  results: [
+    {
+      chunk_id: "chunk-1",
+      document_id: document.id,
+      page_number: 4,
+      chunk_index: 2,
+      content: "Interfaces let people interact with computer systems.",
+      similarity: 0.91234,
+    },
+    {
+      chunk_id: "chunk-2",
+      document_id: document.id,
+      page_number: 7,
+      chunk_index: 5,
+      content: "Usability includes effectiveness and efficiency.",
+      similarity: 0.74567,
+    },
+  ],
 };
 
 function renderWorkspace() {
@@ -56,6 +90,7 @@ describe("DocumentWorkspace", () => {
     mocks.createDocumentChunks.mockReset();
     mocks.createDocumentEmbeddings.mockReset();
     mocks.getDocument.mockReset();
+    mocks.searchDocument.mockReset();
     vi.spyOn(console, "error").mockImplementation(() => undefined);
   });
 
@@ -192,6 +227,91 @@ describe("DocumentWorkspace", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Create embeddings" }));
 
     expect(await screen.findByRole("alert")).toHaveTextContent("Embedding service unavailable");
+  });
+
+  it("shows semantic search only for embedded documents with a default top_k of five", async () => {
+    mocks.getDocument.mockResolvedValue({ ...document, status: "embedded" });
+    renderWorkspace();
+
+    expect(await screen.findByRole("heading", { name: "Semantic search" })).toBeInTheDocument();
+    expect(screen.getByRole("spinbutton", { name: "Top results" })).toHaveValue(5);
+
+    mocks.getDocument.mockResolvedValue({ ...document, status: "processed" });
+    renderWorkspace();
+    await screen.findAllByText("Processed");
+    expect(screen.getAllByRole("heading", { name: "Semantic search" })).toHaveLength(1);
+  });
+
+  it("submits the query and top_k and renders ranked score and chunk provenance", async () => {
+    mocks.getDocument.mockResolvedValue({ ...document, status: "embedded" });
+    mocks.searchDocument.mockResolvedValue({ ...searchResponse, top_k: 2 });
+    renderWorkspace();
+
+    fireEvent.change(await screen.findByRole("searchbox", { name: "Query" }), {
+      target: { value: "  human interfaces  " },
+    });
+    fireEvent.change(screen.getByRole("spinbutton", { name: "Top results" }), {
+      target: { value: "2" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Search" }));
+
+    await waitFor(() => expect(mocks.searchDocument).toHaveBeenCalledWith(
+      document.id,
+      { query: "human interfaces", top_k: 2 },
+    ));
+    expect(await screen.findByText("Rank 1")).toBeInTheDocument();
+    expect(screen.getByText("Similarity 0.912")).toBeInTheDocument();
+    expect(screen.getByText("Chunk index 2")).toBeInTheDocument();
+    expect(screen.getByText("Page 4")).toBeInTheDocument();
+    expect(screen.getByText(searchResponse.results[0].content)).toBeInTheDocument();
+    expect(screen.getByText(/2 ranked results using embeddinggemma/)).toBeInTheDocument();
+  });
+
+  it("disables duplicate searches and announces pending progress", async () => {
+    let resolveSearch: (value: typeof searchResponse) => void;
+    mocks.getDocument.mockResolvedValue({ ...document, status: "embedded" });
+    mocks.searchDocument.mockReturnValue(
+      new Promise<typeof searchResponse>((resolve) => { resolveSearch = resolve; }),
+    );
+    renderWorkspace();
+
+    fireEvent.change(await screen.findByRole("searchbox", { name: "Query" }), {
+      target: { value: "interfaces" },
+    });
+    const searchButton = screen.getByRole("button", { name: "Search" });
+    fireEvent.click(searchButton);
+
+    await waitFor(() => expect(screen.getByRole("button", { name: "Searching..." })).toBeDisabled());
+    fireEvent.click(screen.getByRole("button", { name: "Searching..." }));
+    expect(mocks.searchDocument).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole("status")).toHaveTextContent("Searching embedded chunks...");
+    resolveSearch!(searchResponse);
+  });
+
+  it("renders an empty retrieval state", async () => {
+    mocks.getDocument.mockResolvedValue({ ...document, status: "embedded" });
+    mocks.searchDocument.mockResolvedValue({ ...searchResponse, result_count: 0, results: [] });
+    renderWorkspace();
+
+    fireEvent.change(await screen.findByRole("searchbox", { name: "Query" }), {
+      target: { value: "unrelated topic" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Search" }));
+
+    expect(await screen.findByRole("status")).toHaveTextContent("No matching chunks found.");
+  });
+
+  it("renders a safe semantic search error", async () => {
+    mocks.getDocument.mockResolvedValue({ ...document, status: "embedded" });
+    mocks.searchDocument.mockRejectedValue(new DocumentSearchError("Embedding service unavailable."));
+    renderWorkspace();
+
+    fireEvent.change(await screen.findByRole("searchbox", { name: "Query" }), {
+      target: { value: "interfaces" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Search" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("Embedding service unavailable.");
   });
 
   it("renders unknown backend statuses safely", async () => {

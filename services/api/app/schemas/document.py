@@ -38,7 +38,11 @@ class DocumentEmbeddingResponse(BaseModel):
 
 class DocumentSearchRequest(BaseModel):
     query: Annotated[str, Field(min_length=1)]
-    top_k: int = Field(default_factory=lambda: settings.retrieval_top_k)
+    top_k: int = Field(
+        default_factory=lambda: settings.retrieval_top_k,
+        ge=1,
+        le=settings.retrieval_max_top_k,
+    )
 
     @field_validator("query")
     @classmethod
@@ -48,26 +52,23 @@ class DocumentSearchRequest(BaseModel):
             raise ValueError("query must not be empty")
         return value
 
-    @field_validator("top_k")
-    @classmethod
-    def validate_top_k(cls, value: int) -> int:
-        if not 1 <= value <= settings.retrieval_max_top_k:
-            raise ValueError(
-                f"top_k must be between 1 and {settings.retrieval_max_top_k}"
-            )
-        return value
-
 
 class DocumentSearchResult(BaseModel):
     chunk_id: uuid.UUID
+    document_id: uuid.UUID
     page_number: int
     chunk_index: int
     content: str
-    distance: float
+    similarity: float = Field(
+        description="Cosine similarity (1 - cosine distance); higher values are more similar."
+    )
 
 
 class DocumentSearchResponse(BaseModel):
     document_id: uuid.UUID
     query: str
     top_k: int
+    result_count: int
+    embedding_model: str
+    embedding_dimensions: int
     results: list[DocumentSearchResult]

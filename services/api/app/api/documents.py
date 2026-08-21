@@ -132,13 +132,17 @@ def search_document(
         document_id=document_id,
         query=request.query,
         top_k=request.top_k,
+        result_count=len(results),
+        embedding_model=settings.embedding_model,
+        embedding_dimensions=settings.embedding_dimensions,
         results=[
             DocumentSearchResult(
                 chunk_id=result.chunk_id,
+                document_id=result.document_id,
                 page_number=result.page_number,
                 chunk_index=result.chunk_index,
                 content=result.content,
-                distance=result.cosine_distance,
+                similarity=result.similarity,
             )
             for result in results
         ],

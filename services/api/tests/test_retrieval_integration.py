@@ -107,7 +107,7 @@ def test_real_semantic_retrieval_pipeline() -> None:
 
             hci = client.post(
                 f"/documents/{document_id}/search",
-                json={"query": "How do people interact with computer interfaces?", "top_k": 3},
+                json={"query": "How do people interact with computer interfaces?", "top_k": 2},
             )
             database = client.post(
                 f"/documents/{document_id}/search",
@@ -115,12 +115,22 @@ def test_real_semantic_retrieval_pipeline() -> None:
             )
             repeat_hci = client.post(
                 f"/documents/{document_id}/search",
-                json={"query": "How do people interact with computer interfaces?", "top_k": 3},
+                json={"query": "How do people interact with computer interfaces?", "top_k": 2},
             )
             assert hci.status_code == database.status_code == repeat_hci.status_code == 200
-            assert hci.json()["results"][0]["page_number"] == 1
+            hci_payload = hci.json()
+            assert hci_payload["document_id"] == document_id
+            assert hci_payload["top_k"] == 2
+            assert hci_payload["result_count"] == len(hci_payload["results"]) == 2
+            assert hci_payload["embedding_model"] == settings.embedding_model
+            assert hci_payload["embedding_dimensions"] == settings.embedding_dimensions
+            assert all(result["document_id"] == document_id for result in hci_payload["results"])
+            similarities = [result["similarity"] for result in hci_payload["results"]]
+            assert all(-1.0 <= similarity <= 1.0 for similarity in similarities)
+            assert similarities == sorted(similarities, reverse=True)
+            assert hci_payload["results"][0]["page_number"] == 1
             assert database.json()["results"][0]["page_number"] == 2
-            assert hci.json()["results"] == repeat_hci.json()["results"]
+            assert hci_payload["results"] == repeat_hci.json()["results"]
 
             with SessionLocal() as db:
                 document = db.get(Document, document_id)
