@@ -382,6 +382,10 @@ describe("DocumentWorkspace", () => {
     expect(screen.getByText("Interaction (correct)")).toBeInTheDocument();
     expect(screen.getByText(/page 4, chunk 2/)).toBeInTheDocument();
     expect(screen.queryByRole("radio")).not.toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Start quiz" })).toHaveAttribute(
+      "href",
+      "/quizzes/quiz-456/play",
+    );
   });
 
   it("prevents duplicate quiz generation and announces progress", async () => {

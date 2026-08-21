@@ -202,8 +202,11 @@ export interface components {
              * Format: uuid
              */
             question_id: string;
-            /** Selected Answer */
-            selected_answer: number;
+            /**
+             * Option Id
+             * Format: uuid
+             */
+            option_id: string;
         };
         /** AttemptInProgressResponse */
         AttemptInProgressResponse: {
@@ -217,8 +220,14 @@ export interface components {
              * Format: uuid
              */
             quiz_id: string;
+            /** Title */
+            title: string;
+            /** Topic */
+            topic: string;
             /** Status */
             status: string;
+            /** Total Questions */
+            total_questions: number;
             /**
              * Started At
              * Format: date-time
@@ -229,6 +238,11 @@ export interface components {
         };
         /** AttemptOptionResponse */
         AttemptOptionResponse: {
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
             /** Position */
             position: number;
             /** Text */

@@ -2,7 +2,7 @@ import uuid
 from datetime import datetime
 from typing import Annotated
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from app.config import settings
 
@@ -96,6 +96,7 @@ class QuizGenerationResponse(QuizResponse):
 
 
 class AttemptOptionResponse(BaseModel):
+    id: uuid.UUID
     position: int
     text: str
 
@@ -108,11 +109,15 @@ class AttemptQuestionResponse(BaseModel):
 
 
 class AttemptAnswerSubmission(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     question_id: uuid.UUID
-    selected_answer: Annotated[int, Field(ge=0, le=3)]
+    option_id: uuid.UUID
 
 
 class AttemptSubmissionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     answers: list[AttemptAnswerSubmission]
 
 
@@ -134,7 +139,10 @@ class AttemptReviewAnswerResponse(BaseModel):
 class AttemptInProgressResponse(BaseModel):
     id: uuid.UUID
     quiz_id: uuid.UUID
+    title: str
+    topic: str
     status: str
+    total_questions: int
     started_at: datetime
     questions: list[AttemptQuestionResponse]
 

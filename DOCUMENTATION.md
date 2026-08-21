@@ -185,7 +185,7 @@ uv run python -c "from app.main import app; print(*app.openapi()['paths'].keys()
 | POST | `/documents/{document_id}/quiz/generate` | Retrieves source chunks using `topic`/`top_k` and generates/persists a grounded quiz for an embedded document. |
 | GET | `/quizzes/{quiz_id}` | Database-only retrieval of a persisted quiz; does not invoke Ollama. |
 | POST | `/quizzes/{quiz_id}/attempts` | Creates an in-progress attempt with answer-safe questions. |
-| POST | `/attempts/{attempt_id}/submit` | Scores submitted option indexes and persists the result. |
+| POST | `/attempts/{attempt_id}/submit` | Validates stable question/option IDs, scores server-side, and atomically persists the result. |
 | GET | `/attempts/{attempt_id}` | Returns answer-safe content while in progress, or review/result content after submission. |
 
 ## 9. End-to-end BroQuiz API smoke test
@@ -334,7 +334,9 @@ Invoke-RestMethod "http://127.0.0.1:8000/quizzes/$quizId"
 
 ### Start an attempt
 
-Run from: any directory. There is no request body. Multiple attempts are allowed for a quiz. The `201` response has `id` (save as `<ATTEMPT_ID>`), `quiz_id`, `status`, `started_at`, and `questions`; question options have `position` and `text`. It deliberately does **not** expose correct answers.
+Run from: any directory. There is no request body. Multiple attempts are allowed for a quiz. The `201` response has `id` (save as `<ATTEMPT_ID>`), `quiz_id`, `title`, `topic`, `status`, `total_questions`, `started_at`, and ordered `questions`; ordered question options have stable `id`, `position`, and `text`.
+
+The start/read contract is answer-safe. Before completion it contains no correct option information, correctness flags, explanations, or source citations. The player must use option `id` for submission identity; `position` is display metadata only.
 
 CMD:
 
@@ -351,12 +353,12 @@ Invoke-RestMethod -Method Post -Uri "http://127.0.0.1:8000/quizzes/$quizId/attem
 
 ### Submit answers
 
-Run from: any directory. Get each `question_id` from the attempt response. `selected_answer` is a **zero-based option index**: `0`, `1`, `2`, or `3`. The client submits neither correctness nor score; the backend computes `is_correct` and `score`.
+Run from: any directory. Get each `question_id` and `option_id` from the answer-safe attempt response. Include every quiz question exactly once. The client submits neither correctness nor score; extra fields are rejected and the backend resolves the option, computes correctness, and scores the attempt.
 
 CMD:
 
 ```cmd
-curl.exe -X POST "http://127.0.0.1:8000/attempts/<ATTEMPT_ID>/submit" -H "Content-Type: application/json" -d "{\"answers\":[{\"question_id\":\"<QUESTION_ID_1>\",\"selected_answer\":0},{\"question_id\":\"<QUESTION_ID_2>\",\"selected_answer\":2}]}"
+curl.exe -X POST "http://127.0.0.1:8000/attempts/<ATTEMPT_ID>/submit" -H "Content-Type: application/json" -d "{\"answers\":[{\"question_id\":\"<QUESTION_ID_1>\",\"option_id\":\"<OPTION_ID_1>\"},{\"question_id\":\"<QUESTION_ID_2>\",\"option_id\":\"<OPTION_ID_2>\"}]}"
 ```
 
 PowerShell:
@@ -365,8 +367,8 @@ PowerShell:
 $attemptId = '<ATTEMPT_ID>'
 $body = @{
     answers = @(
-        @{ question_id = '<QUESTION_ID_1>'; selected_answer = 0 }
-        @{ question_id = '<QUESTION_ID_2>'; selected_answer = 2 }
+        @{ question_id = '<QUESTION_ID_1>'; option_id = '<OPTION_ID_1>' }
+        @{ question_id = '<QUESTION_ID_2>'; option_id = '<OPTION_ID_2>' }
     )
 } | ConvertTo-Json -Depth 4
 Invoke-RestMethod -Method Post -Uri "http://127.0.0.1:8000/attempts/$attemptId/submit" -ContentType 'application/json' -Body $body
@@ -392,6 +394,16 @@ Invoke-RestMethod "http://127.0.0.1:8000/attempts/$attemptId"
 ```
 
 An `in_progress` attempt returns the answer-safe representation (`questions` and options, no correct answer). A `submitted` attempt returns the persisted review/results representation including score, correctness, explanations, and sources.
+
+The M7 UI starts at `/quizzes/{quiz_id}/play` and routes a successful start to `/attempts/{attempt_id}`. Selections are local until the user finishes because the established attempt architecture persists the complete answer set atomically. Reloading a valid in-progress attempt safely restores its quiz questions, but not unsubmitted local selections. Reloading a submitted attempt shows only a neutral completion state; M8 will own review presentation.
+
+Expected lifecycle and validation errors:
+
+- `404`: quiz or attempt does not exist;
+- `409`: quiz has no questions, or the attempt is already submitted/not editable;
+- `422`: missing or duplicate questions, a question outside the attempt quiz, an option outside its question/quiz, malformed IDs, or client-supplied extra answer fields.
+
+Every question is required. A submission is one transaction: any persistence failure rolls back the answer rows and leaves the attempt `in_progress`.
 
 ## 10. Ollama, EmbeddingGemma, and qwen
 
@@ -437,9 +449,11 @@ uv run pytest
 uv run pytest -v
 uv run pytest tests/test_embedding_service.py -v
 uv run pytest tests/test_quiz_service.py tests/test_llm_provider.py tests/test_document_api.py -v
+uv run pytest tests/test_attempt_api.py -v
 set BROQUIZ_RUN_INTEGRATION=1 && uv run pytest -v
 set BROQUIZ_RUN_INTEGRATION=1 && uv run pytest tests/test_retrieval_integration.py -v
 set BROQUIZ_RUN_INTEGRATION=1 && uv run pytest tests/test_quiz_integration.py -v
+set BROQUIZ_RUN_INTEGRATION=1 && uv run pytest tests/test_attempt_integration.py -v
 set BROQUIZ_RUN_INTEGRATION=
 ```
 
@@ -450,15 +464,17 @@ uv run pytest
 uv run pytest -v
 uv run pytest tests/test_embedding_service.py -v
 uv run pytest tests/test_quiz_service.py tests/test_llm_provider.py tests/test_document_api.py -v
+uv run pytest tests/test_attempt_api.py -v
 $env:BROQUIZ_RUN_INTEGRATION = '1'; uv run pytest -v
 $env:BROQUIZ_RUN_INTEGRATION = '1'; uv run pytest tests/test_retrieval_integration.py -v
 $env:BROQUIZ_RUN_INTEGRATION = '1'; uv run pytest tests/test_quiz_integration.py -v
+$env:BROQUIZ_RUN_INTEGRATION = '1'; uv run pytest tests/test_attempt_integration.py -v
 Remove-Item Env:BROQUIZ_RUN_INTEGRATION
 ```
 
-Normal unit tests use fakes and do not require live PostgreSQL/Ollama. Real integration tests are skipped unless `BROQUIZ_RUN_INTEGRATION=1` and require their local infrastructure: `tests/test_retrieval_integration.py`, `tests/test_quiz_integration.py`, and `tests/test_attempt_integration.py`. The retrieval and quiz integration tests need PostgreSQL and Ollama; the attempt integration test needs PostgreSQL. They create and clean up their own temporary test records (and upload fixture files where applicable).
+Normal tests use fakes or an in-memory SQLite database and do not require live PostgreSQL/Ollama. `tests/test_attempt_api.py` covers the ordinary M7 lifecycle without Ollama, embeddings, or pgvector. Real integration tests are skipped unless `BROQUIZ_RUN_INTEGRATION=1` and require their local infrastructure: `tests/test_retrieval_integration.py`, `tests/test_quiz_integration.py`, and `tests/test_attempt_integration.py`. The retrieval and quiz integration tests need PostgreSQL and Ollama; the attempt integration test needs PostgreSQL. They create and clean up their own temporary test records (and upload fixture files where applicable).
 
-Frontend M6 verification runs from **apps/broquiz**. Start the FastAPI server before regenerating types; on Windows PowerShell systems that block `npm.ps1`, use `npm.cmd`:
+Frontend M7 verification runs from **apps/broquiz**. Start the FastAPI server before regenerating types; on Windows PowerShell systems that block `npm.ps1`, use `npm.cmd`:
 
 ```powershell
 npm.cmd run api:generate

@@ -39,8 +39,13 @@ def _load_quiz(db: Session, quiz_id: uuid.UUID) -> Quiz | None:
     return db.scalar(select(Quiz).where(Quiz.id == quiz_id).options(*_quiz_options()))
 
 
-def _load_attempt(db: Session, attempt_id: uuid.UUID) -> QuizAttempt | None:
-    return db.scalar(
+def _load_attempt(
+    db: Session,
+    attempt_id: uuid.UUID,
+    *,
+    for_update: bool = False,
+) -> QuizAttempt | None:
+    statement = (
         select(QuizAttempt)
         .where(QuizAttempt.id == attempt_id)
         .options(
@@ -49,6 +54,9 @@ def _load_attempt(db: Session, attempt_id: uuid.UUID) -> QuizAttempt | None:
             selectinload(QuizAttempt.answers).selectinload(AttemptAnswer.question),
         )
     )
+    if for_update:
+        statement = statement.with_for_update()
+    return db.scalar(statement)
 
 
 def _safe_response(attempt: QuizAttempt) -> AttemptInProgressResponse:
@@ -57,11 +65,27 @@ def _safe_response(attempt: QuizAttempt) -> AttemptInProgressResponse:
             id=question.id,
             question=question.question_text,
             position=question.position,
-            options=[AttemptOptionResponse(position=option.position, text=option.option_text) for option in sorted(question.options, key=lambda item: item.position)],
+            options=[
+                AttemptOptionResponse(
+                    id=option.id,
+                    position=option.position,
+                    text=option.option_text,
+                )
+                for option in sorted(question.options, key=lambda item: item.position)
+            ],
         )
         for question in sorted(attempt.quiz.questions, key=lambda item: item.position)
     ]
-    return AttemptInProgressResponse(id=attempt.id, quiz_id=attempt.quiz_id, status=attempt.status, started_at=attempt.started_at, questions=questions)
+    return AttemptInProgressResponse(
+        id=attempt.id,
+        quiz_id=attempt.quiz_id,
+        title=attempt.quiz.title,
+        topic=attempt.quiz.topic,
+        status=attempt.status,
+        total_questions=attempt.total_questions,
+        started_at=attempt.started_at,
+        questions=questions,
+    )
 
 
 def _submitted_response(attempt: QuizAttempt) -> AttemptSubmittedResponse:
@@ -105,11 +129,13 @@ def get_attempt(db: Session, attempt_id: uuid.UUID) -> AttemptInProgressResponse
 
 
 def submit_attempt(db: Session, attempt_id: uuid.UUID, submissions: list[AttemptAnswerSubmission]) -> AttemptSubmittedResponse:
-    attempt = _load_attempt(db, attempt_id)
+    attempt = _load_attempt(db, attempt_id, for_update=True)
     if attempt is None:
         raise AttemptError(404, "Attempt not found.")
     if attempt.status != "in_progress":
         raise AttemptError(409, "Attempt has already been submitted.")
+    if attempt.answers:
+        raise AttemptError(409, "Attempt already contains submitted answers.")
     question_by_id = {question.id: question for question in attempt.quiz.questions}
     submitted_ids = [submission.question_id for submission in submissions]
     if len(submitted_ids) != len(set(submitted_ids)):
@@ -121,9 +147,22 @@ def submit_attempt(db: Session, attempt_id: uuid.UUID, submissions: list[Attempt
         score = 0
         for submission in submissions:
             question = question_by_id[submission.question_id]
-            is_correct = submission.selected_answer == question.correct_answer
+            option = next(
+                (option for option in question.options if option.id == submission.option_id),
+                None,
+            )
+            if option is None:
+                raise AttemptError(422, "Selected option does not belong to its question.")
+            is_correct = option.position == question.correct_answer
             score += is_correct
-            db.add(AttemptAnswer(attempt=attempt, question=question, selected_answer=submission.selected_answer, is_correct=is_correct))
+            db.add(
+                AttemptAnswer(
+                    attempt=attempt,
+                    question=question,
+                    selected_answer=option.position,
+                    is_correct=is_correct,
+                )
+            )
         attempt.score = score
         attempt.status = "submitted"
         attempt.submitted_at = datetime.now().astimezone()

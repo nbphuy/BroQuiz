@@ -1,6 +1,7 @@
 "use client";
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import Link from "next/link";
 import { useState, type FormEvent } from "react";
 import {
   createDocumentChunks,
@@ -197,6 +198,12 @@ function QuizPreview({ quiz }: { quiz: QuizGenerationResponse | undefined }) {
       <p className="mt-1 text-sm text-muted-foreground">
         {quiz.questions.length} {quiz.questions.length === 1 ? "question" : "questions"} · Status: {quiz.status}
       </p>
+      <Link
+        href={`/quizzes/${quiz.id}/play`}
+        className="mt-4 inline-flex rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground"
+      >
+        Start quiz
+      </Link>
       <ol className="mt-4 space-y-5">
         {quiz.questions.map((question, questionIndex) => (
           <li key={`${question.question}-${questionIndex}`}>

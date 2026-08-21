@@ -30,7 +30,7 @@ pytestmark = pytest.mark.skipif(
 )
 
 
-def create_quiz() -> tuple[uuid.UUID, uuid.UUID, list[uuid.UUID]]:
+def create_quiz() -> tuple[uuid.UUID, uuid.UUID, list[uuid.UUID], list[list[uuid.UUID]]]:
     with SessionLocal() as db:
         document = Document(filename="attempt-fixture.pdf", content_type="application/pdf", file_size=1, status="processed", page_count=1)
         quiz = Quiz(document=document, title="Attempt fixture", topic="testing", status="ready", generator_provider="test", generator_model="test")
@@ -43,11 +43,16 @@ def create_quiz() -> tuple[uuid.UUID, uuid.UUID, list[uuid.UUID]]:
             questions.append(question)
         db.add(quiz)
         db.commit()
-        return document.id, quiz.id, [question.id for question in questions]
+        return (
+            document.id,
+            quiz.id,
+            [question.id for question in questions],
+            [[option.id for option in question.options] for question in questions],
+        )
 
 
 def test_real_attempt_flow_and_database_constraints() -> None:
-    document_id, quiz_id, question_ids = create_quiz()
+    document_id, quiz_id, question_ids, option_ids = create_quiz()
     try:
         with TestClient(app) as client:
             first_start = client.post(f"/quizzes/{quiz_id}/attempts")
@@ -56,21 +61,24 @@ def test_real_attempt_flow_and_database_constraints() -> None:
             assert second_start.status_code == 201, second_start.text
             start_payload = first_start.json()
             assert start_payload["id"] != second_start.json()["id"]
-            assert "correct_answer" not in first_start.text
+            for forbidden in ("correct_answer", "is_correct", "explanation", "sources"):
+                assert forbidden not in first_start.text
             assert [question["position"] for question in start_payload["questions"]] == [0, 1, 2]
             assert all([option["position"] for option in question["options"]] == [0, 1, 2, 3] for question in start_payload["questions"])
+            assert all(option["id"] for question in start_payload["questions"] for option in question["options"])
 
             attempt_id = start_payload["id"]
             in_progress = client.get(f"/attempts/{attempt_id}")
             assert in_progress.status_code == 200
-            assert "correct_answer" not in in_progress.text
+            for forbidden in ("correct_answer", "is_correct", "explanation", "sources"):
+                assert forbidden not in in_progress.text
 
             submitted = client.post(
                 f"/attempts/{attempt_id}/submit",
                 json={"answers": [
-                    {"question_id": str(question_ids[0]), "selected_answer": 1},
-                    {"question_id": str(question_ids[1]), "selected_answer": 2},
-                    {"question_id": str(question_ids[2]), "selected_answer": 0},
+                    {"question_id": str(question_ids[0]), "option_id": str(option_ids[0][1])},
+                    {"question_id": str(question_ids[1]), "option_id": str(option_ids[1][2])},
+                    {"question_id": str(question_ids[2]), "option_id": str(option_ids[2][0])},
                 ]},
             )
             assert submitted.status_code == 200, submitted.text
@@ -130,7 +138,7 @@ def test_real_attempt_flow_and_database_constraints() -> None:
 
 
 def test_submission_write_failure_rolls_back_all_answers(monkeypatch) -> None:
-    document_id, quiz_id, question_ids = create_quiz()
+    document_id, quiz_id, question_ids, option_ids = create_quiz()
     try:
         with SessionLocal() as db:
             attempt_id = attempt_service.start_attempt(db, quiz_id).id
@@ -148,7 +156,8 @@ def test_submission_write_failure_rolls_back_all_answers(monkeypatch) -> None:
             monkeypatch.setattr(db, "add", fail_on_second_answer)
             with pytest.raises(RuntimeError, match="forced answer write failure"):
                 attempt_service.submit_attempt(db, attempt_id, [
-                    AttemptAnswerSubmission(question_id=question_id, selected_answer=0) for question_id in question_ids
+                    AttemptAnswerSubmission(question_id=question_id, option_id=option_ids[index][0])
+                    for index, question_id in enumerate(question_ids)
                 ])
             db.expire_all()
             attempt = db.get(QuizAttempt, attempt_id)
